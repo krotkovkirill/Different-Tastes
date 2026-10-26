@@ -1,8 +1,18 @@
+import sqlite3
+from pathlib import Path
+from uuid import uuid4
+
+from database import DATA_DIR, init_db, save_post, get_posts
+
 import flet as ft
 import flet_camera as fc
 
 
 def main(page: ft.Page):
+    init_db()
+    photos_dir = DATA_DIR / "photos"
+    photos_dir.mkdir(parents=True, exist_ok=True)
+
     page.title = "Different Tastes"
     page.scroll = ft.ScrollMode.AUTO
 
@@ -33,6 +43,38 @@ def main(page: ft.Page):
             fit=ft.BoxFit.CONTAIN,
             error_content=ft.Text("Не удалось отобразить фотографию"),
         )
+
+    def make_post_card(post):
+        return ft.Card(
+            content=ft.Container(
+                padding=16,
+                content=ft.Column(
+                    controls=[
+                        ft.Text("Ты", weight=ft.FontWeight.BOLD),
+                        make_image(post["photo"]) if post["photo"] else ft.Text("Файл фотографии недоступен"),
+                        ft.Text(f"Оценка: {post['rating']}/5"),
+                        *([ft.Text(post["comment"], size=18)] if post["comment"] else []),
+                    ],
+                    spacing=10,
+                ),
+            )
+        )
+
+    def load_feed():
+        try:
+            posts = get_posts()
+        except sqlite3.Error as error:
+            status.value = f"Не удалось загрузить ленту: {error}"
+            return
+
+        feed.controls.clear()
+        for post in posts:
+            try:
+                post["photo"] = Path(post["photo_path"]).read_bytes()
+            except OSError:
+                post["photo"] = None
+            feed.controls.append(make_post_card(post))
+        empty_feed.visible = not bool(posts)
 
     async def open_camera(event):
         camera_button.disabled = True
@@ -120,24 +162,24 @@ def main(page: ft.Page):
             "rating": int(rating.value),
             "comment": text,
         }
-        card = ft.Card(
-            content=ft.Container(
-                padding=16,
-                content=ft.Column(
-                    controls=[
-                        ft.Text("Ты", weight=ft.FontWeight.BOLD),
-                        make_image(post["photo"]),
-                        ft.Text(f"Оценка: {post['rating']}/5"),
-                        *([ft.Text(post["comment"], size=18)] if post["comment"] else []),
-                    ],
-                    spacing=10,
-                ),
-            )
-        )
+        photo_path = photos_dir / f"{uuid4().hex}.bin"
+        try:
+            photo_path.write_bytes(photo_bytes)
+            save_post(photo_path, post["rating"], post["comment"])
+        except (OSError, sqlite3.Error) as error:
+            try:
+                photo_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            status.value = f"Не удалось сохранить публикацию: {error}"
+            page.update()
+            return
+
+        card = make_post_card(post)
         feed.controls.insert(0, card)
         empty_feed.visible = False
         reset_draft()
-        status.value = "Опубликовано в локальную ленту"
+        status.value = "Публикация сохранена"
         page.update()
 
     camera_button = ft.Button(content="Подключить камеру", on_click=open_camera)
@@ -155,6 +197,7 @@ def main(page: ft.Page):
         visible=False,
         spacing=12,
     )
+    load_feed()
     page.add(
         title,
         status,
@@ -164,7 +207,7 @@ def main(page: ft.Page):
         draft_form,
         ft.Divider(),
         ft.Text("Лента", size=24),
-        ft.Text("Публикации хранятся только до перезапуска приложения."),
+        ft.Text("Публикации сохраняются на этом компьютере."),
         empty_feed,
         feed,
     )
