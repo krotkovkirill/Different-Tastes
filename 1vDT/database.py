@@ -65,6 +65,19 @@ def delete_post(post_id):
         connection.close()
 
 
+def update_post(post_id, rating, comment):
+    connection = sqlite3.connect(DB_PATH)
+    try:
+        cursor = connection.execute(
+            "UPDATE posts SET rating = ?, comment = ? WHERE id = ?",
+            (rating, comment, post_id),
+        )
+        connection.commit()
+        return cursor.rowcount > 0
+    finally:
+        connection.close()
+
+
 if __name__ == "__main__":
     init_db()
     print(f"База готова: {DB_PATH}")

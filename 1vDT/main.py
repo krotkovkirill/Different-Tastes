@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
-from database import DATA_DIR, init_db, save_post, get_posts, delete_post
+from database import DATA_DIR, init_db, save_post, get_posts, delete_post, update_post
 
 import flet as ft
 import flet_camera as fc
@@ -23,9 +23,7 @@ def main(page: ft.Page):
     photo_bytes = None
     preview = ft.Column()
     comment = ft.TextField(
-        label="Впечатление — необязательно, до 30 символов",
-        hint_text="Например: вообще не кислые",
-        max_length=30,
+        label="Отзыв:",
         width=360,
     )
     rating = ft.Dropdown(
@@ -66,6 +64,61 @@ def main(page: ft.Page):
         load_feed()
         page.update()
 
+    def edit_post(post):
+        edit_comment = ft.TextField(label="Отзыв:", value=post["comment"], width=360)
+        edit_rating = ft.Dropdown(
+            label="Оценка",
+            value=str(post["rating"]),
+            options=[ft.DropdownOption(key=str(value), text=str(value)) for value in range(1, 6)],
+            width=180,
+        )
+        edit_error = ft.Text(color="red")
+
+        def cancel_edit(event):
+            page.pop_dialog()
+
+        def save_edit(event):
+            text = (edit_comment.value or "").strip()
+            edit_comment.error_text = None
+            edit_rating.error_text = None
+            edit_error.value = ""
+
+            if len(text) > 30:
+                edit_comment.error_text = "Не более 30 символов"
+            if edit_rating.value not in {"1", "2", "3", "4", "5"}:
+                edit_rating.error_text = "Выбери оценку от 1 до 5"
+            if edit_comment.error_text or edit_rating.error_text:
+                page.update()
+                return
+
+            try:
+                updated = update_post(post["id"], int(edit_rating.value), text)
+            except sqlite3.Error as error:
+                edit_error.value = f"Не удалось сохранить изменения: {error}"
+                page.update()
+                return
+
+            page.pop_dialog()
+            status.value = "Публикация обновлена" if updated else "Публикация уже удалена"
+            load_feed()
+            page.update()
+
+        page.show_dialog(
+            ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Редактировать публикацию"),
+                content=ft.Column(
+                    controls=[edit_comment, edit_rating, edit_error],
+                    tight=True,
+                    spacing=12,
+                ),
+                actions=[
+                    ft.TextButton(content="Отмена", on_click=cancel_edit),
+                    ft.Button(content="Сохранить", on_click=save_edit),
+                ],
+            )
+        )
+
     def make_post_card(post):
         return ft.Card(
             content=ft.Container(
@@ -76,6 +129,10 @@ def main(page: ft.Page):
                         make_image(post["photo"]) if post["photo"] else ft.Text("Файл фотографии недоступен"),
                         ft.Text(f"Оценка: {post['rating']}/5"),
                         *([ft.Text(post["comment"], size=18)] if post["comment"] else []),
+                        ft.Button(
+                            content="Редактировать",
+                            on_click=lambda event: edit_post(post),
+                        ),
                         ft.Button(
                             content="Удалить",
                             on_click=lambda event: remove_post(post["id"]),
