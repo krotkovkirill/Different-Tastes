@@ -25,10 +25,11 @@ def init_db():
 def save_post(photo_path, rating, comment):
     connection = sqlite3.connect(DB_PATH)
     try:
-        connection.execute("""INSERT INTO posts (photo_path, rating, comment)
+        cursor = connection.execute("""INSERT INTO posts (photo_path, rating, comment)
         VALUES (?, ?, ?)""",
         (str(photo_path), rating, comment))
         connection.commit()
+        return cursor.lastrowid  # ID только что созданной публикации
     finally:
         connection.close()
 
@@ -40,6 +41,26 @@ def get_posts():
         SELECT id, photo_path, rating, comment, created_at FROM posts
         ORDER BY id DESC""").fetchall()
         return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def delete_post(post_id):
+    connection = sqlite3.connect(DB_PATH)
+    try:
+        row = connection.execute(
+            "SELECT photo_path FROM posts WHERE id = ?",  # Находим файл по ID поста
+            (post_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        connection.execute(
+            "DELETE FROM posts WHERE id = ?",  # Удаляем только выбранную запись
+            (post_id,),
+        )
+        connection.commit()
+        return row[0]
     finally:
         connection.close()
 

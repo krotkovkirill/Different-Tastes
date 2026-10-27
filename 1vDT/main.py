@@ -1,8 +1,9 @@
+import base64
 import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
-from database import DATA_DIR, init_db, save_post, get_posts
+from database import DATA_DIR, init_db, save_post, get_posts, delete_post
 
 import flet as ft
 import flet_camera as fc
@@ -37,12 +38,33 @@ def main(page: ft.Page):
 
     def make_image(image_bytes):
         return ft.Image(
-            src=image_bytes,
+            src=base64.b64encode(image_bytes).decode("ascii"),
             width=360,
             height=270,
             fit=ft.BoxFit.CONTAIN,
             error_content=ft.Text("Не удалось отобразить фотографию"),
         )
+
+    def remove_post(post_id):
+        try:
+            saved_path = delete_post(post_id)
+        except sqlite3.Error as error:
+            status.value = f"Не удалось удалить публикацию: {error}"
+            page.update()
+            return
+
+        status.value = "Публикация удалена" if saved_path else "Публикация уже удалена"
+        if saved_path:
+            try:
+                photo_path = Path(saved_path).resolve()
+                if photo_path.parent != photos_dir.resolve():
+                    raise OSError("Фотография находится вне папки снимков")
+                photo_path.unlink(missing_ok=True)
+            except OSError:
+                status.value = "Пост удалён, но файл фотографии удалить не удалось"
+
+        load_feed()
+        page.update()
 
     def make_post_card(post):
         return ft.Card(
@@ -54,6 +76,10 @@ def main(page: ft.Page):
                         make_image(post["photo"]) if post["photo"] else ft.Text("Файл фотографии недоступен"),
                         ft.Text(f"Оценка: {post['rating']}/5"),
                         *([ft.Text(post["comment"], size=18)] if post["comment"] else []),
+                        ft.Button(
+                            content="Удалить",
+                            on_click=lambda event: remove_post(post["id"]),
+                        ),
                     ],
                     spacing=10,
                 ),
@@ -165,7 +191,7 @@ def main(page: ft.Page):
         photo_path = photos_dir / f"{uuid4().hex}.bin"
         try:
             photo_path.write_bytes(photo_bytes)
-            save_post(photo_path, post["rating"], post["comment"])
+            post["id"] = save_post(photo_path, post["rating"], post["comment"])
         except (OSError, sqlite3.Error) as error:
             try:
                 photo_path.unlink(missing_ok=True)
