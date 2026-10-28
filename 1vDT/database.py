@@ -17,6 +17,15 @@ def init_db():
             comment TEXT NOT NULL DEFAULT '' CHECK (length(comment) <= 30),
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)
             """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         connection.commit()
     finally:
         connection.close()
