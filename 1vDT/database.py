@@ -53,6 +53,20 @@ def get_posts():
     finally:
         connection.close()
 
+def created_user(username, display_name, password_hash):
+    connection = sqlite3.connect(DB_PATH)
+    try: 
+        cursor = connection.execute(
+            """
+            INSERT INTO users (username, display_name, password_hash)
+            VALUES (?, ?, ?)
+            """,
+            (username, display_name, password_hash)
+        ) 
+        connection.commit()
+        return cursor.lastrowid
+    finally:
+        connection.close()
 
 def delete_post(post_id):
     connection = sqlite3.connect(DB_PATH)
@@ -86,6 +100,24 @@ def update_post(post_id, rating, comment):
     finally:
         connection.close()
 
+
+def get_user_by_username(username):
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+
+    try:
+        row = connection.execute(
+            """
+            SELECT id, username, display_name, password_hash
+            FROM users
+            WHERE username = ?
+            """,
+            (username,),
+        ).fetchone()
+
+        return dict(row) if row else None
+    finally:
+        connection.close()
 
 if __name__ == "__main__":
     init_db()
