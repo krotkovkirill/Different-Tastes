@@ -8,6 +8,8 @@ from database import DATA_DIR, init_db, save_post, get_posts, delete_post, updat
 import flet as ft
 import flet_camera as fc
 
+from auth_ui import create_auth_form
+
 
 def main(page: ft.Page):
     init_db()
@@ -17,6 +19,8 @@ def main(page: ft.Page):
     page.title = "Different Tastes"
     page.scroll = ft.ScrollMode.AUTO
 
+    current_user = None
+    account_label = ft.Text(visible=False)
     title = ft.Text("Different Tastes", size=28)
     status = ft.Text("Поделись впечатлениями")
     camera = fc.Camera(width=360, height=270)
@@ -44,6 +48,8 @@ def main(page: ft.Page):
         )
 
     def remove_post(post_id):
+        if current_user is None:
+            return
         try:
             saved_path = delete_post(post_id)
         except sqlite3.Error as error:
@@ -65,6 +71,8 @@ def main(page: ft.Page):
         page.update()
 
     def edit_post(post):
+        if current_user is None:
+            return
         edit_comment = ft.TextField(label="Отзыв:", value=post["comment"], width=360)
         edit_rating = ft.Dropdown(
             label="Оценка",
@@ -160,6 +168,8 @@ def main(page: ft.Page):
         empty_feed.visible = not bool(posts)
 
     async def open_camera(event):
+        if current_user is None:
+            return
         camera_button.disabled = True
         photo_button.disabled = True
         status.value = "Подключение камеры"
@@ -187,6 +197,8 @@ def main(page: ft.Page):
 
     async def take_photo(event):
         nonlocal photo_bytes
+        if current_user is None:
+            return
         photo_button.disabled = True
         draft_form.disabled = True
         page.update()
@@ -223,6 +235,8 @@ def main(page: ft.Page):
         page.update()
 
     def publish_post(event):
+        if current_user is None:
+            return
         text = (comment.value or "").strip()
         comment.error_text = None
         rating.error_text = None
@@ -280,20 +294,33 @@ def main(page: ft.Page):
         visible=False,
         spacing=12,
     )
-    load_feed()
-    page.add(
-        title,
-        status,
-        camera_button,
-        camera,
-        photo_button,
-        draft_form,
-        ft.Divider(),
-        ft.Text("Лента", size=24),
-        ft.Text("Публикации сохраняются на этом компьютере."),
-        empty_feed,
-        feed,
+    def on_authenticated(user):
+        nonlocal current_user
+        current_user = user
+        account_label.value = f"Вход выполнен: {user['display_name']} (@{user['username']})"
+        account_label.visible = True
+        auth_form.visible = False
+        app_content.visible = True
+        load_feed()
+
+    auth_form = create_auth_form(page, on_authenticated)
+    app_content = ft.Column(
+        controls=[
+            status,
+            camera_button,
+            camera,
+            photo_button,
+            draft_form,
+            ft.Divider(),
+            ft.Text("Локальная лента", size=24),
+            ft.Text("Публикации сохраняются на этом компьютере."),
+            empty_feed,
+            feed,
+        ],
+        visible=False,
     )
+    page.add(title, account_label, auth_form, app_content)
+
 
 
 if __name__ == "__main__":
