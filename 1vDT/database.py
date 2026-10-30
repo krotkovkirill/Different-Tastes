@@ -119,6 +119,20 @@ def get_user_by_username(username):
     finally:
         connection.close()
 
+
+def create_user(username, display_name, password_hash):
+    connection = sqlite3.connect(DB_PATH)
+    try:
+        cursor = connection.execute(
+            "INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)",
+            (username, display_name, password_hash),
+        )
+        connection.commit()
+        return cursor.lastrowid
+    finally:
+        connection.close()
+
+
 if __name__ == "__main__":
     init_db()
     print(f"База готова: {DB_PATH}")
