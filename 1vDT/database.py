@@ -33,6 +33,20 @@ def init_db():
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS friendships (
+                id INTEGER PRIMARY KEY,
+                sender_id INTEGER NOT NULL REFERENCES users(id),
+                recipient_id INTEGER NOT NULL REFERENCES users(id),
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted')),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CHECK (sender_id != recipient_id)
+            )
+        """)
+        connection.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS friendships_pair
+            ON friendships (min(sender_id, recipient_id), max(sender_id, recipient_id))
+        """)
         columns = {row[1] for row in connection.execute("PRAGMA table_info(posts)")}
         if "user_id" not in columns:
             connection.execute("ALTER TABLE posts ADD COLUMN user_id INTEGER REFERENCES users(id)")
@@ -135,6 +149,92 @@ def create_user(username, display_name, password_hash):
         )
         connection.commit()
         return cursor.lastrowid
+    finally:
+        connection.close()
+
+
+def find_user(username, current_user_id):
+    connection = connect_db()
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            "SELECT id, username, display_name FROM users WHERE username = ? AND id != ?",
+            (username.strip().lower(), current_user_id),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        connection.close()
+
+
+def send_friend_request(sender_id, recipient_id):
+    if sender_id == recipient_id:
+        raise ValueError("Нельзя добавить себя в друзья")
+    connection = connect_db()
+    try:
+        cursor = connection.execute(
+            "INSERT INTO friendships (sender_id, recipient_id) VALUES (?, ?)",
+            (sender_id, recipient_id),
+        )
+        connection.commit()
+        return cursor.lastrowid
+    except sqlite3.IntegrityError as error:
+        if error.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
+            raise ValueError("Заявка уже существует или вы уже друзья") from error
+        if error.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY:
+            raise ValueError("Пользователь не найден") from error
+        raise
+    finally:
+        connection.close()
+
+
+def get_friendships(user_id):
+    connection = connect_db()
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute("""
+            SELECT f.id, f.sender_id, f.recipient_id, f.status,
+                   u.id AS user_id, u.username, u.display_name
+            FROM friendships AS f
+            JOIN users AS u ON u.id = CASE
+                WHEN f.sender_id = ? THEN f.recipient_id ELSE f.sender_id END
+            WHERE f.sender_id = ? OR f.recipient_id = ?
+            ORDER BY f.id DESC
+        """, (user_id, user_id, user_id)).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def respond_friend_request(request_id, user_id, accept):
+    connection = connect_db()
+    try:
+        if accept:
+            cursor = connection.execute(
+                "UPDATE friendships SET status = 'accepted' WHERE id = ? AND recipient_id = ? AND status = 'pending'",
+                (request_id, user_id),
+            )
+        else:
+            cursor = connection.execute(
+                "DELETE FROM friendships WHERE id = ? AND recipient_id = ? AND status = 'pending'",
+                (request_id, user_id),
+            )
+        connection.commit()
+        return cursor.rowcount > 0
+    finally:
+        connection.close()
+
+
+def remove_friendship(request_id, user_id):
+    connection = connect_db()
+    try:
+        cursor = connection.execute("""
+            DELETE FROM friendships WHERE id = ? AND (
+                (status = 'accepted' AND (sender_id = ? OR recipient_id = ?))
+                OR (status = 'pending' AND sender_id = ?)
+            )
+        """, (request_id, user_id, user_id, user_id))
+        connection.commit()
+        return cursor.rowcount > 0
     finally:
         connection.close()
 

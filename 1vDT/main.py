@@ -9,6 +9,7 @@ import flet as ft
 import flet_camera as fc
 
 from auth_ui import create_auth_form
+from friends_ui import create_friends_panel
 
 
 def main(page: ft.Page):
@@ -307,8 +308,10 @@ def main(page: ft.Page):
         account_label.visible = True
         auth_form.visible = False
         app_content.visible = True
+        friends_slot.controls = [create_friends_panel(page, user)]
         load_feed()
 
+    friends_slot = ft.Column()
     auth_form = create_auth_form(page, on_authenticated)
     app_content = ft.Column(
         controls=[
@@ -317,6 +320,8 @@ def main(page: ft.Page):
             camera,
             photo_button,
             draft_form,
+            ft.Divider(),
+            friends_slot,
             ft.Divider(),
             ft.Text("Моя лента", size=24),
             ft.Text("Здесь только твои публикации. Они сохраняются на этом компьютере."),
