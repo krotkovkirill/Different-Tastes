@@ -11,7 +11,7 @@ from database import (
 )
 
 
-def create_friends_panel(page, user):
+def create_friends_panel(page, user, on_change=None):
     search = ft.TextField(label="Логин друга", width=360)
     message = ft.Text()
     result = ft.Column()
@@ -51,6 +51,8 @@ def create_friends_panel(page, user):
         for section in (incoming, outgoing, friends):
             if not section.controls:
                 section.controls.append(ft.Text("Пока пусто"))
+        if on_change is not None:
+            on_change()
         page.update()
 
     def change(request_id, action):

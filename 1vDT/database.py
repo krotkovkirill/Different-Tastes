@@ -80,6 +80,29 @@ def get_posts(user_id):
     finally:
         connection.close()
 
+
+def get_feed(user_id):
+    connection = connect_db()
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute("""
+            SELECT p.id, p.user_id, p.photo_path, p.rating, p.comment, p.created_at,
+                   u.username, u.display_name
+            FROM posts AS p
+            JOIN users AS u ON u.id = p.user_id
+            WHERE p.user_id = ? OR EXISTS (
+                SELECT 1 FROM friendships AS f
+                WHERE f.status = 'accepted' AND (
+                    (f.sender_id = ? AND f.recipient_id = p.user_id)
+                    OR (f.recipient_id = ? AND f.sender_id = p.user_id)
+                )
+            )
+            ORDER BY p.id DESC
+        """, (user_id, user_id, user_id)).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
 def created_user(username, display_name, password_hash):
     connection = connect_db()
     try: 

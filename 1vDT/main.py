@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
-from database import DATA_DIR, init_db, save_post, get_posts, delete_post, update_post
+from database import DATA_DIR, init_db, save_post, get_feed, delete_post, update_post
 
 import flet as ft
 import flet_camera as fc
@@ -37,7 +37,7 @@ def main(page: ft.Page):
         width=180,
     )
     feed = ft.Column(spacing=16)
-    empty_feed = ft.Text("Пока нет публикаций. Сделай первый снимок.")
+    empty_feed = ft.Text("Пока нет публикаций. Сделай снимок или добавь друзей.")
 
     def make_image(image_bytes):
         return ft.Image(
@@ -135,7 +135,7 @@ def main(page: ft.Page):
                 padding=16,
                 content=ft.Column(
                     controls=[
-                        ft.Text(current_user["display_name"] if is_owner else "Другой пользователь", weight=ft.FontWeight.BOLD),
+                        ft.Text(f"{post['display_name']} (@{post['username']})", weight=ft.FontWeight.BOLD),
                         make_image(post["photo"]) if post["photo"] else ft.Text("Файл фотографии недоступен"),
                         ft.Text(f"Оценка: {post['rating']}/5"),
                         *([ft.Text(post["comment"], size=18)] if post["comment"] else []),
@@ -155,13 +155,14 @@ def main(page: ft.Page):
             )
         )
 
-    def load_feed():
+    def load_feed(event=None):
         if current_user is None:
             return
         try:
-            posts = get_posts(current_user["id"])
+            posts = get_feed(current_user["id"])
         except sqlite3.Error as error:
             status.value = f"Не удалось загрузить ленту: {error}"
+            page.update()
             return
 
         feed.controls.clear()
@@ -172,6 +173,7 @@ def main(page: ft.Page):
                 post["photo"] = None
             feed.controls.append(make_post_card(post))
         empty_feed.visible = not bool(posts)
+        page.update()
 
     async def open_camera(event):
         if current_user is None:
@@ -279,10 +281,8 @@ def main(page: ft.Page):
             page.update()
             return
 
-        card = make_post_card(post)
-        feed.controls.insert(0, card)
-        empty_feed.visible = False
         reset_draft()
+        load_feed()
         status.value = "Публикация сохранена"
         page.update()
 
@@ -308,7 +308,7 @@ def main(page: ft.Page):
         account_label.visible = True
         auth_form.visible = False
         app_content.visible = True
-        friends_slot.controls = [create_friends_panel(page, user)]
+        friends_slot.controls = [create_friends_panel(page, user, on_change=load_feed)]
         load_feed()
 
     friends_slot = ft.Column()
@@ -323,8 +323,9 @@ def main(page: ft.Page):
             ft.Divider(),
             friends_slot,
             ft.Divider(),
-            ft.Text("Моя лента", size=24),
-            ft.Text("Здесь только твои публикации. Они сохраняются на этом компьютере."),
+            ft.Text("Лента друзей", size=24),
+            ft.Text("Твои публикации и посты принятых друзей."),
+            ft.Button(content="Обновить ленту", on_click=load_feed),
             empty_feed,
             feed,
         ],
