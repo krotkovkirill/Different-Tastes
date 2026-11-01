@@ -4,14 +4,21 @@ from pathlib import Path
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DB_PATH = DATA_DIR / "different_tastes.db"
 
+def connect_db():
+    connection = sqlite3.connect(DB_PATH)
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
+
 def init_db():
     DATA_DIR.mkdir(parents = True, exist_ok = True)
-    connection = sqlite3.connect(DB_PATH)
+    connection = connect_db()
 
     try:
         connection.execute("""
         CREATE TABLE IF NOT EXISTS posts (
             id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
             photo_path TEXT NOT NULL,
             rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
             comment TEXT NOT NULL DEFAULT '' CHECK (length(comment) <= 30),
@@ -26,35 +33,41 @@ def init_db():
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(posts)")}
+        if "user_id" not in columns:
+            connection.execute("ALTER TABLE posts ADD COLUMN user_id INTEGER REFERENCES users(id)")
         connection.commit()
     finally:
         connection.close()
 
 
-def save_post(photo_path, rating, comment):
-    connection = sqlite3.connect(DB_PATH)
+def save_post(photo_path, rating, comment, user_id):
+    if user_id is None:
+        raise ValueError("Нужен автор публикации")
+    connection = connect_db()
     try:
-        cursor = connection.execute("""INSERT INTO posts (photo_path, rating, comment)
-        VALUES (?, ?, ?)""",
-        (str(photo_path), rating, comment))
+        cursor = connection.execute("""INSERT INTO posts (photo_path, rating, comment, user_id)
+        VALUES (?, ?, ?, ?)""",
+        (str(photo_path), rating, comment, user_id))
         connection.commit()
-        return cursor.lastrowid  # ID только что созданной публикации
+        return cursor.lastrowid
     finally:
         connection.close()
 
-def get_posts():
-    connection = sqlite3.connect(DB_PATH)
+def get_posts(user_id):
+    connection = connect_db()
     connection.row_factory = sqlite3.Row
     try:
         rows = connection.execute("""
-        SELECT id, photo_path, rating, comment, created_at FROM posts
-        ORDER BY id DESC""").fetchall()
+        SELECT id, user_id, photo_path, rating, comment, created_at FROM posts
+        WHERE user_id = ?
+        ORDER BY id DESC""", (user_id,)).fetchall()
         return [dict(row) for row in rows]
     finally:
         connection.close()
 
 def created_user(username, display_name, password_hash):
-    connection = sqlite3.connect(DB_PATH)
+    connection = connect_db()
     try: 
         cursor = connection.execute(
             """
@@ -68,32 +81,25 @@ def created_user(username, display_name, password_hash):
     finally:
         connection.close()
 
-def delete_post(post_id):
-    connection = sqlite3.connect(DB_PATH)
+def delete_post(post_id, user_id):
+    connection = connect_db()
     try:
         row = connection.execute(
-            "SELECT photo_path FROM posts WHERE id = ?",  # Находим файл по ID поста
-            (post_id,),
+            "DELETE FROM posts WHERE id = ? AND user_id = ? RETURNING photo_path",
+            (post_id, user_id),
         ).fetchone()
-        if row is None:
-            return None
-
-        connection.execute(
-            "DELETE FROM posts WHERE id = ?",  # Удаляем только выбранную запись
-            (post_id,),
-        )
         connection.commit()
-        return row[0]
+        return row[0] if row else None
     finally:
         connection.close()
 
 
-def update_post(post_id, rating, comment):
-    connection = sqlite3.connect(DB_PATH)
+def update_post(post_id, rating, comment, user_id):
+    connection = connect_db()
     try:
         cursor = connection.execute(
-            "UPDATE posts SET rating = ?, comment = ? WHERE id = ?",
-            (rating, comment, post_id),
+            "UPDATE posts SET rating = ?, comment = ? WHERE id = ? AND user_id = ?",
+            (rating, comment, post_id, user_id),
         )
         connection.commit()
         return cursor.rowcount > 0
@@ -102,7 +108,7 @@ def update_post(post_id, rating, comment):
 
 
 def get_user_by_username(username):
-    connection = sqlite3.connect(DB_PATH)
+    connection = connect_db()
     connection.row_factory = sqlite3.Row
 
     try:
@@ -121,7 +127,7 @@ def get_user_by_username(username):
 
 
 def create_user(username, display_name, password_hash):
-    connection = sqlite3.connect(DB_PATH)
+    connection = connect_db()
     try:
         cursor = connection.execute(
             "INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)",
@@ -136,4 +142,3 @@ def create_user(username, display_name, password_hash):
 if __name__ == "__main__":
     init_db()
     print(f"База готова: {DB_PATH}")
-    print(get_posts())

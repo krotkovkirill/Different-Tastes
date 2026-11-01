@@ -51,13 +51,13 @@ def main(page: ft.Page):
         if current_user is None:
             return
         try:
-            saved_path = delete_post(post_id)
+            saved_path = delete_post(post_id, current_user["id"])
         except sqlite3.Error as error:
             status.value = f"Не удалось удалить публикацию: {error}"
             page.update()
             return
 
-        status.value = "Публикация удалена" if saved_path else "Публикация уже удалена"
+        status.value = "Публикация удалена" if saved_path else "Публикация не найдена или недоступна"
         if saved_path:
             try:
                 photo_path = Path(saved_path).resolve()
@@ -71,7 +71,7 @@ def main(page: ft.Page):
         page.update()
 
     def edit_post(post):
-        if current_user is None:
+        if current_user is None or post["user_id"] != current_user["id"]:
             return
         edit_comment = ft.TextField(label="Отзыв:", value=post["comment"], width=360)
         edit_rating = ft.Dropdown(
@@ -100,14 +100,14 @@ def main(page: ft.Page):
                 return
 
             try:
-                updated = update_post(post["id"], int(edit_rating.value), text)
+                updated = update_post(post["id"], int(edit_rating.value), text, current_user["id"])
             except sqlite3.Error as error:
                 edit_error.value = f"Не удалось сохранить изменения: {error}"
                 page.update()
                 return
 
             page.pop_dialog()
-            status.value = "Публикация обновлена" if updated else "Публикация уже удалена"
+            status.value = "Публикация обновлена" if updated else "Публикация не найдена или недоступна"
             load_feed()
             page.update()
 
@@ -128,21 +128,24 @@ def main(page: ft.Page):
         )
 
     def make_post_card(post):
+        is_owner = current_user is not None and post["user_id"] == current_user["id"]
         return ft.Card(
             content=ft.Container(
                 padding=16,
                 content=ft.Column(
                     controls=[
-                        ft.Text("Ты", weight=ft.FontWeight.BOLD),
+                        ft.Text(current_user["display_name"] if is_owner else "Другой пользователь", weight=ft.FontWeight.BOLD),
                         make_image(post["photo"]) if post["photo"] else ft.Text("Файл фотографии недоступен"),
                         ft.Text(f"Оценка: {post['rating']}/5"),
                         *([ft.Text(post["comment"], size=18)] if post["comment"] else []),
                         ft.Button(
                             content="Редактировать",
+                            visible=is_owner,
                             on_click=lambda event: edit_post(post),
                         ),
                         ft.Button(
                             content="Удалить",
+                            visible=is_owner,
                             on_click=lambda event: remove_post(post["id"]),
                         ),
                     ],
@@ -152,8 +155,10 @@ def main(page: ft.Page):
         )
 
     def load_feed():
+        if current_user is None:
+            return
         try:
-            posts = get_posts()
+            posts = get_posts(current_user["id"])
         except sqlite3.Error as error:
             status.value = f"Не удалось загрузить ленту: {error}"
             return
@@ -255,6 +260,7 @@ def main(page: ft.Page):
             return
 
         post = {
+            "user_id": current_user["id"],
             "photo": photo_bytes,
             "rating": int(rating.value),
             "comment": text,
@@ -262,7 +268,7 @@ def main(page: ft.Page):
         photo_path = photos_dir / f"{uuid4().hex}.bin"
         try:
             photo_path.write_bytes(photo_bytes)
-            post["id"] = save_post(photo_path, post["rating"], post["comment"])
+            post["id"] = save_post(photo_path, post["rating"], post["comment"], current_user["id"])
         except (OSError, sqlite3.Error) as error:
             try:
                 photo_path.unlink(missing_ok=True)
@@ -312,8 +318,8 @@ def main(page: ft.Page):
             photo_button,
             draft_form,
             ft.Divider(),
-            ft.Text("Локальная лента", size=24),
-            ft.Text("Публикации сохраняются на этом компьютере."),
+            ft.Text("Моя лента", size=24),
+            ft.Text("Здесь только твои публикации. Они сохраняются на этом компьютере."),
             empty_feed,
             feed,
         ],
