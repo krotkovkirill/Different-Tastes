@@ -12,12 +12,12 @@ from database import (
 
 
 def create_friends_panel(page, user, on_change=None):
-    search = ft.TextField(label="Логин друга", width=360)
-    message = ft.Text()
-    result = ft.Column()
-    incoming = ft.Column()
-    outgoing = ft.Column()
-    friends = ft.Column()
+    search = ft.TextField(label="Логин друга", text_size=18)
+    message = ft.Text(visible=False, size=18)
+    result = ft.Column(horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+    incoming = ft.Column(horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+    outgoing = ft.Column(horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+    friends = ft.Column(horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
     def refresh(event=None):
         try:
@@ -35,22 +35,24 @@ def create_friends_panel(page, user, on_change=None):
             if relationship["status"] == "accepted":
                 friends.controls.append(ft.Column(controls=[
                     label,
-                    ft.TextButton(content="Удалить из друзей", on_click=lambda event, rid=request_id: change(rid, "remove")),
+                    ft.TextButton(height=52, content="Удалить из друзей", on_click=lambda event, rid=request_id: change(rid, "remove")),
                 ]))
             elif relationship["recipient_id"] == user["id"]:
                 incoming.controls.append(ft.Column(controls=[
                     label,
-                    ft.Button(content="Принять", on_click=lambda event, rid=request_id: change(rid, "accept")),
-                    ft.TextButton(content="Отклонить", on_click=lambda event, rid=request_id: change(rid, "decline")),
+                    ft.Button(height=56, content="Принять", on_click=lambda event, rid=request_id: change(rid, "accept")),
+                    ft.TextButton(height=52, content="Отклонить", on_click=lambda event, rid=request_id: change(rid, "decline")),
                 ]))
             else:
                 outgoing.controls.append(ft.Column(controls=[
                     label,
-                    ft.TextButton(content="Отменить заявку", on_click=lambda event, rid=request_id: change(rid, "remove")),
+                    ft.TextButton(height=52, content="Отменить заявку", on_click=lambda event, rid=request_id: change(rid, "remove")),
                 ]))
-        for section in (incoming, outgoing, friends):
-            if not section.controls:
-                section.controls.append(ft.Text("Пока пусто"))
+        incoming_heading.visible = bool(incoming.controls)
+        outgoing_heading.visible = bool(outgoing.controls)
+        if not friends.controls:
+            friends.controls.append(ft.Text("Пока нет друзей", size=20))
+        message.visible = bool(message.value)
         if on_change is not None:
             on_change()
         page.update()
@@ -96,23 +98,26 @@ def create_friends_panel(page, user, on_change=None):
                 else:
                     result.controls = [
                         ft.Text(f"{found['display_name']} (@{found['username']})"),
-                        ft.Button(content="Добавить в друзья", on_click=lambda event: send(found["id"])),
+                        ft.Button(height=56, content="Добавить в друзья", on_click=lambda event: send(found["id"])),
                     ]
+        message.visible = bool(message.value)
         page.update()
 
+    incoming_heading = ft.Text("Заявки", size=24, weight=ft.FontWeight.BOLD)
+    outgoing_heading = ft.Text("Отправлены", size=24, weight=ft.FontWeight.BOLD)
     panel = ft.Column(controls=[
-        ft.Text("Друзья", size=24),
+        ft.Text("Друзья", size=32, weight=ft.FontWeight.BOLD),
         search,
-        ft.Button(content="Найти", on_click=search_user),
+        ft.Button(height=56, content="Найти", on_click=search_user),
         message,
         result,
-        ft.Button(content="Обновить список", on_click=refresh),
-        ft.Text("Входящие заявки", weight=ft.FontWeight.BOLD),
+        ft.Button(height=56, content="Обновить список", on_click=refresh),
+        incoming_heading,
         incoming,
-        ft.Text("Отправленные заявки", weight=ft.FontWeight.BOLD),
+        outgoing_heading,
         outgoing,
-        ft.Text("Мои друзья", weight=ft.FontWeight.BOLD),
+        ft.Text("Мои друзья", size=24, weight=ft.FontWeight.BOLD),
         friends,
-    ], spacing=12)
+    ], spacing=20, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
     refresh()
     return panel

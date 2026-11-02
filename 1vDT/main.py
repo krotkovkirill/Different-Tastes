@@ -19,31 +19,69 @@ def main(page: ft.Page):
 
     page.title = "Different Tastes"
     page.scroll = ft.ScrollMode.AUTO
+    page.theme_mode = ft.ThemeMode.LIGHT
+    page.theme = ft.Theme(
+        color_scheme_seed="#176B5B",
+        text_theme=ft.TextTheme(
+            body_medium=ft.TextStyle(size=18),
+            body_large=ft.TextStyle(size=18),
+            label_large=ft.TextStyle(size=18, weight=ft.FontWeight.W_600),
+        ),
+        button_theme=ft.ButtonTheme(style=ft.ButtonStyle(
+            bgcolor={ft.ControlState.DEFAULT: "#176B5B", ft.ControlState.DISABLED: "#D5DDD8"},
+            color={ft.ControlState.DEFAULT: "#FFFFFF", ft.ControlState.DISABLED: "#63716A"},
+            text_style=ft.TextStyle(size=18, weight=ft.FontWeight.W_600),
+            shape=ft.RoundedRectangleBorder(radius=16),
+        )),
+        navigation_bar_theme=ft.NavigationBarTheme(
+            label_text_style=ft.TextStyle(size=16, weight=ft.FontWeight.W_600),
+            height=80,
+        ),
+    )
+    page.bgcolor = "#F7F8FA"
+    page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+    page.padding = 0
 
     current_user = None
-    account_label = ft.Text(visible=False)
-    title = ft.Text("Different Tastes", size=28)
-    status = ft.Text("Поделись впечатлениями")
-    camera = fc.Camera(width=360, height=270)
+    title = ft.Text("different tastes", size=26, weight=ft.FontWeight.BOLD, expand=True, max_lines=1)
+    status = ft.Text("", size=18, visible=False)
+    camera = fc.Camera()
     photo_bytes = None
-    preview = ft.Column()
+    preview = ft.Column(horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
     comment = ft.TextField(
         label="Отзыв:",
-        width=360,
+        text_size=18,
     )
     rating = ft.Dropdown(
         label="Оценка",
         options=[ft.DropdownOption(key=str(value), text=str(value)) for value in range(1, 6)],
-        width=180,
+        text_size=18,
     )
-    feed = ft.Column(spacing=16)
-    empty_feed = ft.Text("Пока нет публикаций. Сделай снимок или добавь друзей.")
+    feed = ft.Column(spacing=20, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+    empty_feed = ft.Container(
+        padding=ft.Padding.symmetric(vertical=32),
+        content=ft.Column(controls=[
+            ft.Container(
+                content=ft.Icon(ft.Icons.CAMERA_ALT_OUTLINED, size=64, color="#176B5B"),
+                bgcolor="#E7F1EB", width=128, height=128,
+                alignment=ft.Alignment.CENTER, border_radius=36,
+            ),
+            ft.Text("Пока нет снимков", size=32, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
+            ft.Column(controls=[
+                ft.Button(content="Сделать снимок", height=56, on_click=lambda event: show_screen(1)),
+                ft.TextButton(content="Добавить друзей", height=56, on_click=lambda event: show_screen(2)),
+            ], horizontal_alignment=ft.CrossAxisAlignment.STRETCH, spacing=8),
+        ], spacing=28, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+    )
 
-    def make_image(image_bytes):
+    def set_status(message):
+        status.value = message
+        status.visible = bool(message)
+
+    def make_image(image_bytes, fill=False):
         return ft.Image(
             src=base64.b64encode(image_bytes).decode("ascii"),
-            width=360,
-            height=270,
+            aspect_ratio=1 if fill else 4 / 3,
             fit=ft.BoxFit.CONTAIN,
             error_content=ft.Text("Не удалось отобразить фотографию"),
         )
@@ -54,11 +92,11 @@ def main(page: ft.Page):
         try:
             saved_path = delete_post(post_id, current_user["id"])
         except sqlite3.Error as error:
-            status.value = f"Не удалось удалить публикацию: {error}"
+            set_status(f"Не удалось удалить публикацию: {error}")
             page.update()
             return
 
-        status.value = "Публикация удалена" if saved_path else "Публикация не найдена или недоступна"
+        set_status("Публикация удалена" if saved_path else "Публикация не найдена или недоступна")
         if saved_path:
             try:
                 photo_path = Path(saved_path).resolve()
@@ -66,7 +104,7 @@ def main(page: ft.Page):
                     raise OSError("Фотография находится вне папки снимков")
                 photo_path.unlink(missing_ok=True)
             except OSError:
-                status.value = "Пост удалён, но файл фотографии удалить не удалось"
+                set_status("Пост удалён, но файл фотографии удалить не удалось")
 
         load_feed()
         page.update()
@@ -74,12 +112,12 @@ def main(page: ft.Page):
     def edit_post(post):
         if current_user is None or post["user_id"] != current_user["id"]:
             return
-        edit_comment = ft.TextField(label="Отзыв:", value=post["comment"], width=360)
+        edit_comment = ft.TextField(label="Отзыв:", value=post["comment"], text_size=18)
         edit_rating = ft.Dropdown(
             label="Оценка",
             value=str(post["rating"]),
             options=[ft.DropdownOption(key=str(value), text=str(value)) for value in range(1, 6)],
-            width=180,
+            text_size=18,
         )
         edit_error = ft.Text(color="red")
 
@@ -108,7 +146,7 @@ def main(page: ft.Page):
                 return
 
             page.pop_dialog()
-            status.value = "Публикация обновлена" if updated else "Публикация не найдена или недоступна"
+            set_status("Публикация обновлена" if updated else "Публикация не найдена или недоступна")
             load_feed()
             page.update()
 
@@ -119,7 +157,8 @@ def main(page: ft.Page):
                 content=ft.Column(
                     controls=[edit_comment, edit_rating, edit_error],
                     tight=True,
-                    spacing=12,
+                    spacing=16,
+                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                 ),
                 actions=[
                     ft.TextButton(content="Отмена", on_click=cancel_edit),
@@ -130,29 +169,66 @@ def main(page: ft.Page):
 
     def make_post_card(post):
         is_owner = current_user is not None and post["user_id"] == current_user["id"]
-        return ft.Card(
-            content=ft.Container(
-                padding=16,
-                content=ft.Column(
-                    controls=[
-                        ft.Text(f"{post['display_name']} (@{post['username']})", weight=ft.FontWeight.BOLD),
-                        make_image(post["photo"]) if post["photo"] else ft.Text("Файл фотографии недоступен"),
-                        ft.Text(f"Оценка: {post['rating']}/5"),
-                        *([ft.Text(post["comment"], size=18)] if post["comment"] else []),
-                        ft.Button(
-                            content="Редактировать",
-                            visible=is_owner,
-                            on_click=lambda event: edit_post(post),
-                        ),
-                        ft.Button(
-                            content="Удалить",
-                            visible=is_owner,
-                            on_click=lambda event: remove_post(post["id"]),
-                        ),
-                    ],
-                    spacing=10,
+        author = post["display_name"]
+        avatar = ft.Container(
+            content=ft.Text(author[:1].upper(), color="#176B5B", size=22, weight=ft.FontWeight.BOLD),
+            width=48,
+            height=48,
+            alignment=ft.Alignment.CENTER,
+            bgcolor="#E7F1EB",
+            border_radius=24,
+        )
+        actions = ft.PopupMenuButton(
+            icon=ft.Icons.MORE_HORIZ,
+            tooltip="Действия с публикацией",
+            width=48, height=48, icon_size=28,
+            visible=is_owner,
+            items=[
+                ft.PopupMenuItem(content="Редактировать", icon=ft.Icons.EDIT_OUTLINED, height=52, on_click=lambda event: edit_post(post)),
+                ft.PopupMenuItem(content="Удалить", icon=ft.Icons.DELETE_OUTLINE, height=52, on_click=lambda event: remove_post(post["id"])),
+            ],
+        )
+        image = make_image(post["photo"], fill=True) if post["photo"] else ft.Container(
+            aspect_ratio=1,
+            alignment=ft.Alignment.CENTER,
+            content=ft.Column(controls=[
+                ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED_OUTLINED, color="#63716A", size=36),
+                ft.Text("Фото недоступно", color="#63716A"),
+            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+        )
+        rating_badge = ft.Container(
+            bgcolor="#E7F1EB",
+            border_radius=14,
+            padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            content=ft.Row(controls=[
+                ft.Icon(ft.Icons.STAR_ROUNDED, color="#176B5B", size=26),
+                ft.Text(f"{post['rating']} / 5", color="#176B5B", weight=ft.FontWeight.BOLD, size=24),
+            ], spacing=6, tight=True),
+        )
+        return ft.Container(
+            bgcolor="#FFFFFF",
+            border=ft.Border.all(1, "#E2E8E5"),
+            border_radius=24,
+            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            content=ft.Column(controls=[
+                ft.Container(
+                    padding=16,
+                    content=ft.Row(controls=[
+                        avatar,
+                        ft.Text(author, size=22, weight=ft.FontWeight.BOLD, expand=True,
+                                max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, tooltip=f"@{post['username']}"),
+                        actions,
+                    ], spacing=10),
                 ),
-            )
+                ft.Container(content=image, bgcolor="#F0F3F1"),
+                ft.Container(
+                    padding=16,
+                    content=ft.Column(controls=[
+                        ft.Row(controls=[rating_badge]),
+                        *([ft.Text(post["comment"], size=22, color="#202A25")] if post["comment"] else []),
+                    ], spacing=12),
+                ),
+            ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
         )
 
     def load_feed(event=None):
@@ -161,7 +237,7 @@ def main(page: ft.Page):
         try:
             posts = get_feed(current_user["id"])
         except sqlite3.Error as error:
-            status.value = f"Не удалось загрузить ленту: {error}"
+            set_status(f"Не удалось загрузить ленту: {error}")
             page.update()
             return
 
@@ -179,15 +255,16 @@ def main(page: ft.Page):
         if current_user is None:
             return
         camera_button.disabled = True
+        logout_button.disabled = True
         photo_button.disabled = True
-        status.value = "Подключение камеры"
+        set_status("Подключение камеры")
         page.update()
         camera_ready = False
 
         try:
             cameras = await camera.get_available_cameras()
             if not cameras:
-                status.value = "Камера не найдена"
+                set_status("Камера не найдена")
             else:
                 await camera.initialize(
                     description=cameras[0],
@@ -195,10 +272,11 @@ def main(page: ft.Page):
                     enable_audio=False,
                 )
                 camera_ready = True
-                status.value = "Камера подключена"
+                set_status("Камера подключена")
         except Exception as error:
-            status.value = f"Ошибка подключения камеры: {error}"
+            set_status(f"Ошибка подключения камеры: {error}")
         finally:
+            logout_button.disabled = False
             camera_button.disabled = camera_ready
             photo_button.disabled = not camera_ready
             page.update()
@@ -208,6 +286,7 @@ def main(page: ft.Page):
         if current_user is None:
             return
         photo_button.disabled = True
+        logout_button.disabled = True
         draft_form.disabled = True
         page.update()
         try:
@@ -218,10 +297,11 @@ def main(page: ft.Page):
             preview.controls = [make_image(photo_bytes)]
             draft_form.visible = True
             photo_button.content = "Переснять"
-            status.value = "Добавь подпись и оценку"
+            set_status("Добавь подпись и оценку")
         except Exception as error:
-            status.value = f"Ошибка при съёмке: {error}"
+            set_status(f"Ошибка при съёмке: {error}")
         finally:
+            logout_button.disabled = False
             photo_button.disabled = False
             draft_form.disabled = False
             page.update()
@@ -239,7 +319,7 @@ def main(page: ft.Page):
 
     def clear_photo(event):
         reset_draft()
-        status.value = "Можно сделать новый снимок"
+        set_status("Можно сделать новый снимок")
         page.update()
 
     def publish_post(event):
@@ -250,7 +330,7 @@ def main(page: ft.Page):
         rating.error_text = None
 
         if photo_bytes is None:
-            status.value = "Сначала сделай снимок"
+            set_status("Сначала сделай снимок")
             page.update()
             return
 
@@ -277,62 +357,138 @@ def main(page: ft.Page):
                 photo_path.unlink(missing_ok=True)
             except OSError:
                 pass
-            status.value = f"Не удалось сохранить публикацию: {error}"
+            set_status(f"Не удалось сохранить публикацию: {error}")
             page.update()
             return
 
         reset_draft()
         load_feed()
-        status.value = "Публикация сохранена"
-        page.update()
+        set_status("Публикация сохранена")
+        show_screen(0)
 
-    camera_button = ft.Button(content="Подключить камеру", on_click=open_camera)
+    camera_button = ft.Button(content="Подключить камеру", height=56, on_click=open_camera)
     photo_button = ft.Button(
-        content="Сделать снимок", on_click=take_photo, disabled=True
+        content="Сделать снимок", height=56, on_click=take_photo, disabled=True
     )
     draft_form = ft.Column(
         controls=[
             preview,
             comment,
             rating,
-            ft.Button(content="Опубликовать", on_click=publish_post),
-            ft.Button(content="Убрать снимок", on_click=clear_photo),
+            ft.Button(content="Опубликовать", height=56, on_click=publish_post),
+            ft.TextButton(content="Убрать снимок", height=56, on_click=clear_photo),
         ],
         visible=False,
-        spacing=12,
+        spacing=16,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )
+    def show_screen(index):
+        if current_user is None:
+            return
+        navigation.selected_index = index
+        feed_screen.visible = index == 0
+        camera_screen.visible = index == 1
+        friends_screen.visible = index == 2
+        if index == 0:
+            load_feed()
+        page.update()
+
+    def navigate(event):
+        show_screen(event.control.selected_index)
+
+    def logout(event):
+        nonlocal current_user, auth_form, camera
+        if logout_button.disabled:
+            return
+        current_user = None
+        reset_draft()
+        feed.controls.clear()
+        friends_slot.controls.clear()
+        empty_feed.visible = True
+        logout_button.visible = False
+        set_status("")
+        app_content.visible = False
+        navigation.visible = False
+        camera_slot.controls.clear()
+        camera = fc.Camera()
+        resize_layout()
+        camera_button.disabled = False
+        photo_button.disabled = True
+        auth_form = create_auth_form(page, on_authenticated)
+        auth_slot.controls = [auth_form]
+        auth_slot.visible = True
+        page.update()
+
     def on_authenticated(user):
         nonlocal current_user
         current_user = user
-        account_label.value = f"Вход выполнен: {user['display_name']} (@{user['username']})"
-        account_label.visible = True
-        auth_form.visible = False
+        logout_button.visible = True
+        logout_button.tooltip = f"Выйти: @{user['username']}"
+        auth_slot.visible = False
         app_content.visible = True
+        navigation.visible = True
+        camera_slot.controls = [camera]
         friends_slot.controls = [create_friends_panel(page, user, on_change=load_feed)]
-        load_feed()
+        show_screen(0)
 
-    friends_slot = ft.Column()
+    friends_slot = ft.Column(horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+    camera_slot = ft.Column(controls=[camera], horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
     auth_form = create_auth_form(page, on_authenticated)
-    app_content = ft.Column(
-        controls=[
-            status,
-            camera_button,
-            camera,
-            photo_button,
-            draft_form,
-            ft.Divider(),
-            friends_slot,
-            ft.Divider(),
-            ft.Text("Лента друзей", size=24),
-            ft.Text("Твои публикации и посты принятых друзей."),
-            ft.Button(content="Обновить ленту", on_click=load_feed),
-            empty_feed,
-            feed,
+    auth_slot = ft.Column(controls=[auth_form], horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+    logout_button = ft.IconButton(icon=ft.Icons.LOGOUT, tooltip="Выйти из аккаунта", width=48, height=48, icon_size=26, visible=False, on_click=logout)
+    feed_screen = ft.Column(controls=[
+        ft.Row(controls=[
+            ft.Text("Лента", size=32, weight=ft.FontWeight.BOLD, expand=True),
+            ft.IconButton(icon=ft.Icons.REFRESH_ROUNDED, tooltip="Обновить ленту", icon_color="#176B5B", width=48, height=48, icon_size=28, on_click=load_feed),
+        ]),
+        empty_feed,
+        feed,
+    ], spacing=16, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+    camera_screen = ft.Column(controls=[
+        ft.Text("Камера", size=32, weight=ft.FontWeight.BOLD),
+        camera_button,
+        camera_slot,
+        photo_button,
+        draft_form,
+    ], visible=False, spacing=16, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+    friends_screen = ft.Column(controls=[friends_slot], visible=False, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+    navigation = ft.NavigationBar(
+        destinations=[
+            ft.NavigationBarDestination(icon=ft.Icons.HOME_OUTLINED, selected_icon=ft.Icons.HOME, label="Лента"),
+            ft.NavigationBarDestination(icon=ft.Icons.CAMERA_ALT_OUTLINED, selected_icon=ft.Icons.CAMERA_ALT, label="Камера"),
+            ft.NavigationBarDestination(icon=ft.Icons.PEOPLE_OUTLINE, selected_icon=ft.Icons.PEOPLE, label="Друзья"),
         ],
+        selected_index=0,
         visible=False,
+        on_change=navigate,
     )
-    page.add(title, account_label, auth_form, app_content)
+    page.navigation_bar = navigation
+    app_content = ft.Column(controls=[
+        status,
+        feed_screen,
+        camera_screen,
+        friends_screen,
+    ], visible=False, spacing=20, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+    root_view = ft.Container(
+        content=ft.Column(controls=[
+            ft.Row(controls=[title, logout_button], spacing=12),
+            auth_slot,
+            app_content,
+        ], spacing=24, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+    )
 
+    def resize_layout(event=None):
+        viewport_width = getattr(page, "width", None) or 390
+        gutter = 24 if viewport_width >= 600 else 16
+        root_view.width = min(viewport_width, 760)
+        root_view.padding = ft.Padding.symmetric(horizontal=gutter, vertical=20)
+        camera.width = max(1, root_view.width - 2 * gutter)
+        camera.height = camera.width * 3 / 4
+        page.update()
+
+    page.on_resize = resize_layout
+    page.add(root_view)
+    resize_layout()
 
 
 if __name__ == "__main__":
