@@ -47,6 +47,13 @@ def init_db():
             CREATE UNIQUE INDEX IF NOT EXISTS friendships_pair
             ON friendships (min(sender_id, recipient_id), max(sender_id, recipient_id))
         """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                expires_at INTEGER NOT NULL
+            )
+        """)
         columns = {row[1] for row in connection.execute("PRAGMA table_info(posts)")}
         if "user_id" not in columns:
             connection.execute("ALTER TABLE posts ADD COLUMN user_id INTEGER REFERENCES users(id)")
@@ -258,6 +265,43 @@ def remove_friendship(request_id, user_id):
         """, (request_id, user_id, user_id, user_id))
         connection.commit()
         return cursor.rowcount > 0
+    finally:
+        connection.close()
+
+
+def save_session(token_hash, user_id, expires_at, now):
+    connection = connect_db()
+    try:
+        connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
+        connection.execute(
+            "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
+            (token_hash, user_id, expires_at),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def get_session_user(token_hash, now):
+    connection = connect_db()
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute("""
+            SELECT u.id, u.username, u.display_name
+            FROM sessions AS s
+            JOIN users AS u ON u.id = s.user_id
+            WHERE s.token_hash = ? AND s.expires_at > ?
+        """, (token_hash, now)).fetchone()
+        return dict(row) if row else None
+    finally:
+        connection.close()
+
+
+def delete_session(token_hash):
+    connection = connect_db()
+    try:
+        connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+        connection.commit()
     finally:
         connection.close()
 

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import sqlite3
 
 import flet as ft
@@ -71,13 +72,14 @@ def create_auth_form(page, on_success):
                 user = await asyncio.to_thread(
                     login_user, submitted_username, submitted_password
                 )
+            password.value = ""
+            result = on_success(user)
+            if inspect.isawaitable(result):
+                await result
         except ValueError as error:
             error_text.value = str(error)
         except sqlite3.Error:
             error_text.value = "Не удалось обратиться к базе. Попробуй ещё раз."
-        else:
-            password.value = ""
-            on_success(user)
         finally:
             form.disabled = False
             submit_button.disabled = False

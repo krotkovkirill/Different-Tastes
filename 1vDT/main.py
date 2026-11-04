@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import sqlite3
 from pathlib import Path
@@ -8,11 +9,12 @@ from database import DATA_DIR, init_db, save_post, get_feed, delete_post, update
 import flet as ft
 import flet_camera as fc
 
+from auth import create_session, resume_session, end_session, SESSION_STORAGE_KEY
 from auth_ui import create_auth_form
 from friends_ui import create_friends_panel
 
 
-def main(page: ft.Page):
+async def main(page: ft.Page):
     init_db()
     photos_dir = DATA_DIR / "photos"
     photos_dir.mkdir(parents=True, exist_ok=True)
@@ -42,6 +44,8 @@ def main(page: ft.Page):
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
     page.padding = 0
 
+    preferences = ft.SharedPreferences()
+    current_token = None
     current_user = None
     title = ft.Text("different tastes", size=26, weight=ft.FontWeight.BOLD, expand=True, max_lines=1)
     status = ft.Text("", size=18, visible=False)
@@ -87,7 +91,7 @@ def main(page: ft.Page):
         )
 
     def remove_post(post_id):
-        if current_user is None:
+        if not require_login():
             return
         try:
             saved_path = delete_post(post_id, current_user["id"])
@@ -110,7 +114,7 @@ def main(page: ft.Page):
         page.update()
 
     def edit_post(post):
-        if current_user is None or post["user_id"] != current_user["id"]:
+        if not require_login() or post["user_id"] != current_user["id"]:
             return
         edit_comment = ft.TextField(label="Отзыв:", value=post["comment"], text_size=18)
         edit_rating = ft.Dropdown(
@@ -125,6 +129,9 @@ def main(page: ft.Page):
             page.pop_dialog()
 
         def save_edit(event):
+            if not require_login():
+                page.pop_dialog()
+                return
             text = (edit_comment.value or "").strip()
             edit_comment.error_text = None
             edit_rating.error_text = None
@@ -232,7 +239,7 @@ def main(page: ft.Page):
         )
 
     def load_feed(event=None):
-        if current_user is None:
+        if not require_login():
             return
         try:
             posts = get_feed(current_user["id"])
@@ -252,7 +259,7 @@ def main(page: ft.Page):
         page.update()
 
     async def open_camera(event):
-        if current_user is None:
+        if not require_login():
             return
         camera_button.disabled = True
         logout_button.disabled = True
@@ -283,7 +290,7 @@ def main(page: ft.Page):
 
     async def take_photo(event):
         nonlocal photo_bytes
-        if current_user is None:
+        if not require_login():
             return
         photo_button.disabled = True
         logout_button.disabled = True
@@ -293,6 +300,8 @@ def main(page: ft.Page):
             captured = await camera.take_picture()
             if not captured:
                 raise ValueError("Камера вернула пустой снимок")
+            if not require_login():
+                return
             photo_bytes = bytes(captured)
             preview.controls = [make_image(photo_bytes)]
             draft_form.visible = True
@@ -323,7 +332,7 @@ def main(page: ft.Page):
         page.update()
 
     def publish_post(event):
-        if current_user is None:
+        if not require_login():
             return
         text = (comment.value or "").strip()
         comment.error_text = None
@@ -383,7 +392,7 @@ def main(page: ft.Page):
         horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )
     def show_screen(index):
-        if current_user is None:
+        if not require_login():
             return
         navigation.selected_index = index
         feed_screen.visible = index == 0
@@ -396,11 +405,10 @@ def main(page: ft.Page):
     def navigate(event):
         show_screen(event.control.selected_index)
 
-    def logout(event):
-        nonlocal current_user, auth_form, camera
-        if logout_button.disabled:
-            return
+    def clear_login():
+        nonlocal current_user, current_token, auth_form, camera
         current_user = None
+        current_token = None
         reset_draft()
         feed.controls.clear()
         friends_slot.controls.clear()
@@ -419,7 +427,56 @@ def main(page: ft.Page):
         auth_slot.visible = True
         page.update()
 
-    def on_authenticated(user):
+    def require_login():
+        if current_user is None or current_token is None:
+            return False
+        try:
+            user = resume_session(current_token)
+        except sqlite3.Error:
+            set_status("Не удалось проверить вход. Повтори попытку.")
+            page.update()
+            return False
+        if user is None or user["id"] != current_user["id"]:
+            clear_login()
+            auth_form.controls[4].value = "Вход завершён. Войди снова."
+            page.update()
+            return False
+        return True
+
+    async def logout(event):
+        if logout_button.disabled:
+            return
+        logout_button.disabled = True
+        page.update()
+        try:
+            await asyncio.to_thread(end_session, current_token)
+        except sqlite3.Error:
+            set_status("Не удалось выйти из аккаунта. Попробуй ещё раз.")
+            logout_button.disabled = False
+            page.update()
+            return
+        try:
+            await preferences.remove(SESSION_STORAGE_KEY)
+        except Exception:
+            pass
+        clear_login()
+        logout_button.disabled = False
+        page.update()
+
+    async def on_authenticated(user):
+        nonlocal current_token
+        token = await asyncio.to_thread(create_session, user["id"])
+        try:
+            saved = await preferences.set(SESSION_STORAGE_KEY, token)
+        except Exception:
+            saved = False
+        current_token = token
+        activate_user(user)
+        if not saved:
+            set_status("Вход выполнен. Браузер не смог сохранить его для следующего запуска.")
+            page.update()
+
+    def activate_user(user):
         nonlocal current_user
         current_user = user
         logout_button.visible = True
@@ -428,13 +485,15 @@ def main(page: ft.Page):
         app_content.visible = True
         navigation.visible = True
         camera_slot.controls = [camera]
-        friends_slot.controls = [create_friends_panel(page, user, on_change=load_feed)]
+        friends_slot.controls = [create_friends_panel(page, user, on_change=load_feed, is_authenticated=require_login)]
         show_screen(0)
 
     friends_slot = ft.Column(horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
     camera_slot = ft.Column(controls=[camera], horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
     auth_form = create_auth_form(page, on_authenticated)
-    auth_slot = ft.Column(controls=[auth_form], horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+    auth_form.disabled = True
+    auth_slot = ft.Column(controls=[auth_form], visible=False, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+    loading = ft.ProgressRing(width=32, height=32)
     logout_button = ft.IconButton(icon=ft.Icons.LOGOUT, tooltip="Выйти из аккаунта", width=48, height=48, icon_size=26, visible=False, on_click=logout)
     feed_screen = ft.Column(controls=[
         ft.Row(controls=[
@@ -472,6 +531,7 @@ def main(page: ft.Page):
     root_view = ft.Container(
         content=ft.Column(controls=[
             ft.Row(controls=[title, logout_button], spacing=12),
+            loading,
             auth_slot,
             app_content,
         ], spacing=24, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
@@ -489,6 +549,21 @@ def main(page: ft.Page):
     page.on_resize = resize_layout
     page.add(root_view)
     resize_layout()
+    try:
+        token = await preferences.get(SESSION_STORAGE_KEY)
+        user = await asyncio.to_thread(resume_session, token)
+        if user is not None:
+            current_token = token
+            activate_user(user)
+        elif token is not None:
+            await preferences.remove(SESSION_STORAGE_KEY)
+    except Exception:
+        auth_form.controls[4].value = "Не удалось восстановить вход. Войди ещё раз."
+    finally:
+        loading.visible = False
+        auth_form.disabled = False
+        auth_slot.visible = current_user is None
+        page.update()
 
 
 if __name__ == "__main__":

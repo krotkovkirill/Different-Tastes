@@ -11,7 +11,7 @@ from database import (
 )
 
 
-def create_friends_panel(page, user, on_change=None):
+def create_friends_panel(page, user, on_change=None, is_authenticated=None):
     search = ft.TextField(label="Логин друга", text_size=18)
     message = ft.Text(visible=False, size=18)
     result = ft.Column(horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
@@ -20,6 +20,8 @@ def create_friends_panel(page, user, on_change=None):
     friends = ft.Column(horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
     def refresh(event=None):
+        if is_authenticated is not None and not is_authenticated():
+            return
         try:
             relationships = get_friendships(user["id"])
         except sqlite3.Error:
@@ -58,6 +60,8 @@ def create_friends_panel(page, user, on_change=None):
         page.update()
 
     def change(request_id, action):
+        if is_authenticated is not None and not is_authenticated():
+            return
         try:
             if action == "remove":
                 changed = remove_friendship(request_id, user["id"])
@@ -70,6 +74,8 @@ def create_friends_panel(page, user, on_change=None):
         refresh()
 
     def send(recipient_id):
+        if is_authenticated is not None and not is_authenticated():
+            return
         try:
             send_friend_request(user["id"], recipient_id)
         except ValueError as error:
@@ -82,6 +88,8 @@ def create_friends_panel(page, user, on_change=None):
         refresh()
 
     def search_user(event):
+        if is_authenticated is not None and not is_authenticated():
+            return
         result.controls.clear()
         message.value = ""
         username = (search.value or "").strip()

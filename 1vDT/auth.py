@@ -1,12 +1,17 @@
+import hashlib
+import secrets
 import sqlite3
+import time
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 
-from database import create_user, get_user_by_username
+from database import create_user, get_user_by_username, save_session, get_session_user, delete_session
 
 
 password_hasher = PasswordHasher()
+SESSION_TTL = 7 * 24 * 60 * 60
+SESSION_STORAGE_KEY = "different_tastes.session.v1"
 
 
 def hash_password(password):
@@ -61,6 +66,27 @@ def login_user(username, password):
         "username": user["username"],
         "display_name": user["display_name"],
     }
+
+
+def create_session(user_id):
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    now = int(time.time())
+    save_session(token_hash, user_id, now + SESSION_TTL, now)
+    return token
+
+
+def resume_session(token):
+    if not isinstance(token, str) or len(token) != 43:
+        return None
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    return get_session_user(token_hash, int(time.time()))
+
+
+def end_session(token):
+    if isinstance(token, str) and len(token) == 43:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        delete_session(token_hash)
 
 
 if __name__ == "__main__":
