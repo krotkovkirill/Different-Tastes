@@ -1,34 +1,29 @@
 import asyncio
 import inspect
+import logging
 import sqlite3
 
 import flet as ft
 
 from auth import login_user, register_user
+from ui import ERROR, MUTED, primary, stack, sync_text, text_field
+
+logger = logging.getLogger(__name__)
 
 
 def create_auth_form(page, on_success):
     registration_mode = False
     submitting = False
-    heading = ft.Text("Вход", size=32)
-    username = ft.TextField(label="Логин", text_size=18)
-    display_name = ft.TextField(label="Имя", text_size=18, visible=False)
-    password = ft.TextField(
-        label="Пароль", password=True, can_reveal_password=True, text_size=18
-    )
-    error_text = ft.Text(color="red")
-
-    def clear_error(event):
-        ft.context.disable_auto_update()
-        if isinstance(event.data, str):
-            event.control.value = event.data
-        if not form.disabled and error_text.value:
-            error_text.value = ""
-            error_text.update()
-
-    username.on_change = clear_error
-    display_name.on_change = clear_error
-    password.on_change = clear_error
+    heading = ft.Text("С возвращением", size=32, weight=ft.FontWeight.BOLD)
+    username = text_field("Логин", autocorrect=False, enable_suggestions=False,
+                          autofill_hints=[ft.AutofillHint.USERNAME], on_change=sync_text)
+    display_name = text_field("Имя", visible=False, on_change=sync_text)
+    password = text_field("Пароль", password=True, can_reveal_password=True,
+                          autofill_hints=[ft.AutofillHint.PASSWORD], on_change=sync_text)
+    confirmation = text_field("Повтори пароль", password=True, can_reveal_password=True,
+                              visible=False, on_change=sync_text)
+    error_text = ft.Text("", color=ERROR, visible=False, size=18)
+    subtitle = ft.Text("Войди, чтобы увидеть, что пробуют друзья.", color=MUTED, size=18)
 
     def switch_mode(event):
         nonlocal registration_mode
@@ -36,64 +31,65 @@ def create_auth_form(page, on_success):
             return
         registration_mode = not registration_mode
         display_name.visible = registration_mode
-        heading.value = "Регистрация" if registration_mode else "Вход"
+        confirmation.visible = registration_mode
+        heading.value = "Начнём знакомство"
+        if not registration_mode:
+            heading.value = "С возвращением"
+        subtitle.value = "Выбери логин и пароль от 8 символов." if registration_mode else "Войди, чтобы увидеть, что пробуют друзья."
         submit_button.content = "Создать аккаунт" if registration_mode else "Войти"
         switch_button.content = "Уже есть аккаунт? Войти" if registration_mode else "Создать аккаунт"
-        password.value = ""
-        error_text.value = ""
+        password.value = confirmation.value = ""
+        error_text.visible = False
         page.update()
 
     async def submit(event):
         nonlocal submitting
         if submitting:
             return
-        submitting = True
         ft.context.disable_auto_update()
-        if event is not None and event.control is password and isinstance(event.data, str):
-            password.value = event.data
-        submitted_username = username.value or ""
-        submitted_name = display_name.value or ""
-        submitted_password = password.value or ""
-        is_registration = registration_mode
+        if event is not None and event.control in (password, confirmation) and isinstance(event.data, str):
+            event.control.value = event.data
+        values = (username.value or "", display_name.value or "", password.value or "")
+        if registration_mode and values[2] != (confirmation.value or ""):
+            error_text.value = "Пароли не совпадают"
+            error_text.visible = True
+            page.update()
+            return
+        submitting = True
         form.disabled = True
-        submit_button.disabled = True
-        switch_button.disabled = True
-        error_text.value = ""
+        error_text.visible = False
         page.update()
         try:
-            if is_registration:
-                user = await asyncio.to_thread(
-                    register_user,
-                    submitted_username,
-                    submitted_name,
-                    submitted_password,
-                )
-            else:
-                user = await asyncio.to_thread(
-                    login_user, submitted_username, submitted_password
-                )
-            password.value = ""
+            user = await asyncio.to_thread(register_user, *values) if registration_mode else await asyncio.to_thread(login_user, values[0], values[2])
+            password.value = confirmation.value = ""
             result = on_success(user)
             if inspect.isawaitable(result):
                 await result
         except ValueError as error:
             error_text.value = str(error)
+            error_text.visible = True
         except sqlite3.Error:
-            error_text.value = "Не удалось обратиться к базе. Попробуй ещё раз."
+            error_text.value = "Не удалось открыть аккаунт. Попробуй ещё раз."
+            error_text.visible = True
+        except Exception:
+            logger.exception("Authentication interface failed")
+            error_text.value = "Не удалось завершить вход. Попробуй ещё раз."
+            error_text.visible = True
         finally:
             form.disabled = False
-            submit_button.disabled = False
-            switch_button.disabled = False
             submitting = False
             page.update()
 
-    password.on_submit = submit
-
-    submit_button = ft.Button(content="Войти", height=56, on_click=submit)
-    switch_button = ft.TextButton(content="Создать аккаунт", height=56, on_click=switch_mode)
-    form = ft.Column(
-        controls=[heading, username, display_name, password, error_text, submit_button, switch_button],
-        spacing=20,
-        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-    )
+    password.on_submit = confirmation.on_submit = submit
+    submit_button = primary("Войти", submit)
+    switch_button = ft.TextButton(content="Создать аккаунт", height=52, on_click=switch_mode)
+    form = stack([heading, subtitle, username, display_name, password, confirmation,
+                  error_text, submit_button, switch_button], spacing=20)
+    form.username = username
+    form.display_name = display_name
+    form.password = password
+    form.confirmation = confirmation
+    form.error_text = error_text
+    form.submit_button = submit_button
+    form.switch_button = switch_button
     return form

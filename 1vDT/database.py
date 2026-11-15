@@ -1,39 +1,49 @@
+import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR = Path(os.environ.get("DT_DATA_DIR", Path(__file__).resolve().parent / "data")).expanduser().resolve()
 DB_PATH = DATA_DIR / "different_tastes.db"
 
+
 def connect_db():
-    connection = sqlite3.connect(DB_PATH)
+    connection = sqlite3.connect(DB_PATH, timeout=10)
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.row_factory = sqlite3.Row
     return connection
 
 
-def init_db():
-    DATA_DIR.mkdir(parents = True, exist_ok = True)
+@contextmanager
+def transaction():
     connection = connect_db()
-
     try:
-        connection.execute("""
-        CREATE TABLE IF NOT EXISTS posts (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id),
-            photo_path TEXT NOT NULL,
-            rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
-            comment TEXT NOT NULL DEFAULT '' CHECK (length(comment) <= 30),
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)
-            """)
-        connection.execute("""
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
+def init_db():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with transaction() as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
                 username TEXT NOT NULL UNIQUE,
                 display_name TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        connection.execute("""
+            );
+            CREATE TABLE IF NOT EXISTS posts (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                photo_path TEXT NOT NULL,
+                rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+                comment TEXT NOT NULL DEFAULT '' CHECK (length(comment) <= 30),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS friendships (
                 id INTEGER PRIMARY KEY,
                 sender_id INTEGER NOT NULL REFERENCES users(id),
@@ -41,269 +51,246 @@ def init_db():
                 status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted')),
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 CHECK (sender_id != recipient_id)
-            )
-        """)
-        connection.execute("""
+            );
             CREATE UNIQUE INDEX IF NOT EXISTS friendships_pair
-            ON friendships (min(sender_id, recipient_id), max(sender_id, recipient_id))
-        """)
-        connection.execute("""
+                ON friendships (min(sender_id, recipient_id), max(sender_id, recipient_id));
             CREATE TABLE IF NOT EXISTS sessions (
                 token_hash TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 expires_at INTEGER NOT NULL
-            )
+            );
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                username TEXT PRIMARY KEY,
+                failures INTEGER NOT NULL,
+                first_failure INTEGER NOT NULL,
+                blocked_until INTEGER NOT NULL DEFAULT 0
+            );
         """)
         columns = {row[1] for row in connection.execute("PRAGMA table_info(posts)")}
         if "user_id" not in columns:
             connection.execute("ALTER TABLE posts ADD COLUMN user_id INTEGER REFERENCES users(id)")
-        connection.commit()
-    finally:
-        connection.close()
+        connection.execute("CREATE INDEX IF NOT EXISTS posts_author ON posts(user_id, id DESC)")
+        connection.execute("CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at)")
 
 
 def save_post(photo_path, rating, comment, user_id):
     if user_id is None:
         raise ValueError("Нужен автор публикации")
-    connection = connect_db()
-    try:
-        cursor = connection.execute("""INSERT INTO posts (photo_path, rating, comment, user_id)
-        VALUES (?, ?, ?, ?)""",
-        (str(photo_path), rating, comment, user_id))
-        connection.commit()
+    if isinstance(rating, bool) or not isinstance(rating, int) or not 1 <= rating <= 5:
+        raise ValueError("Выбери оценку от 1 до 5")
+    comment = comment.strip()
+    if len(comment) > 30:
+        raise ValueError("Отзыв — не более 30 символов")
+    with transaction() as connection:
+        cursor = connection.execute(
+            "INSERT INTO posts (photo_path, rating, comment, user_id) VALUES (?, ?, ?, ?)",
+            (str(photo_path), rating, comment, user_id),
+        )
         return cursor.lastrowid
-    finally:
-        connection.close()
+
 
 def get_posts(user_id):
-    connection = connect_db()
-    connection.row_factory = sqlite3.Row
-    try:
-        rows = connection.execute("""
-        SELECT id, user_id, photo_path, rating, comment, created_at FROM posts
-        WHERE user_id = ?
-        ORDER BY id DESC""", (user_id,)).fetchall()
-        return [dict(row) for row in rows]
-    finally:
-        connection.close()
+    with transaction() as connection:
+        return [dict(row) for row in connection.execute(
+            "SELECT * FROM posts WHERE user_id = ? ORDER BY id DESC", (user_id,)
+        )]
 
 
-def get_feed(user_id):
-    connection = connect_db()
-    connection.row_factory = sqlite3.Row
-    try:
+def get_feed(user_id, limit=12, before_id=None, own_only=False):
+    limit = max(1, min(int(limit), 50))
+    with transaction() as connection:
         rows = connection.execute("""
             SELECT p.id, p.user_id, p.photo_path, p.rating, p.comment, p.created_at,
                    u.username, u.display_name
-            FROM posts AS p
-            JOIN users AS u ON u.id = p.user_id
-            WHERE p.user_id = ? OR EXISTS (
-                SELECT 1 FROM friendships AS f
-                WHERE f.status = 'accepted' AND (
-                    (f.sender_id = ? AND f.recipient_id = p.user_id)
-                    OR (f.recipient_id = ? AND f.sender_id = p.user_id)
-                )
-            )
-            ORDER BY p.id DESC
-        """, (user_id, user_id, user_id)).fetchall()
+            FROM posts AS p JOIN users AS u ON u.id = p.user_id
+            WHERE (? IS NULL OR p.id < ?)
+              AND (p.user_id = ? OR (? = 0 AND EXISTS (
+                  SELECT 1 FROM friendships AS f
+                  WHERE f.status = 'accepted' AND (
+                      (f.sender_id = ? AND f.recipient_id = p.user_id)
+                      OR (f.recipient_id = ? AND f.sender_id = p.user_id)
+                  )
+              )))
+            ORDER BY p.id DESC LIMIT ?
+        """, (before_id, before_id, user_id, int(own_only), user_id, user_id, limit)).fetchall()
         return [dict(row) for row in rows]
-    finally:
-        connection.close()
 
-def created_user(username, display_name, password_hash):
-    connection = connect_db()
-    try: 
-        cursor = connection.execute(
-            """
-            INSERT INTO users (username, display_name, password_hash)
-            VALUES (?, ?, ?)
-            """,
-            (username, display_name, password_hash)
-        ) 
-        connection.commit()
-        return cursor.lastrowid
-    finally:
-        connection.close()
 
 def delete_post(post_id, user_id):
-    connection = connect_db()
-    try:
+    with transaction() as connection:
         row = connection.execute(
             "DELETE FROM posts WHERE id = ? AND user_id = ? RETURNING photo_path",
             (post_id, user_id),
         ).fetchone()
-        connection.commit()
         return row[0] if row else None
-    finally:
-        connection.close()
 
 
 def update_post(post_id, rating, comment, user_id):
-    connection = connect_db()
-    try:
+    if isinstance(rating, bool) or not isinstance(rating, int) or not 1 <= rating <= 5:
+        raise ValueError("Выбери оценку от 1 до 5")
+    comment = comment.strip()
+    if len(comment) > 30:
+        raise ValueError("Отзыв — не более 30 символов")
+    with transaction() as connection:
         cursor = connection.execute(
             "UPDATE posts SET rating = ?, comment = ? WHERE id = ? AND user_id = ?",
             (rating, comment, post_id, user_id),
         )
-        connection.commit()
         return cursor.rowcount > 0
-    finally:
-        connection.close()
 
 
 def get_user_by_username(username):
-    connection = connect_db()
-    connection.row_factory = sqlite3.Row
-
-    try:
-        row = connection.execute(
-            """
-            SELECT id, username, display_name, password_hash
-            FROM users
-            WHERE username = ?
-            """,
-            (username,),
-        ).fetchone()
-
+    with transaction() as connection:
+        row = connection.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         return dict(row) if row else None
-    finally:
-        connection.close()
+
+
+def get_user(user_id):
+    with transaction() as connection:
+        row = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
 
 
 def create_user(username, display_name, password_hash):
-    connection = connect_db()
-    try:
+    with transaction() as connection:
         cursor = connection.execute(
             "INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)",
             (username, display_name, password_hash),
         )
-        connection.commit()
         return cursor.lastrowid
-    finally:
-        connection.close()
+
+
+def update_display_name(user_id, display_name):
+    display_name = display_name.strip()
+    if not 1 <= len(display_name) <= 50:
+        raise ValueError("Имя должно содержать от 1 до 50 символов")
+    with transaction() as connection:
+        return connection.execute(
+            "UPDATE users SET display_name = ? WHERE id = ?", (display_name, user_id)
+        ).rowcount > 0
+
+
+def update_password(user_id, expected_hash, new_hash):
+    with transaction() as connection:
+        changed = connection.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ? AND password_hash = ?",
+            (new_hash, user_id, expected_hash),
+        ).rowcount > 0
+        if changed:
+            connection.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        return changed
+
+
+def get_stats(user_id):
+    with transaction() as connection:
+        posts = connection.execute("SELECT count(*) FROM posts WHERE user_id = ?", (user_id,)).fetchone()[0]
+        friends = connection.execute(
+            "SELECT count(*) FROM friendships WHERE status = 'accepted' AND (sender_id = ? OR recipient_id = ?)",
+            (user_id, user_id),
+        ).fetchone()[0]
+        return {"posts": posts, "friends": friends}
 
 
 def find_user(username, current_user_id):
-    connection = connect_db()
-    connection.row_factory = sqlite3.Row
-    try:
+    with transaction() as connection:
         row = connection.execute(
             "SELECT id, username, display_name FROM users WHERE username = ? AND id != ?",
-            (username.strip().lower(), current_user_id),
+            (username.strip().lower().lstrip("@"), current_user_id),
         ).fetchone()
         return dict(row) if row else None
-    finally:
-        connection.close()
 
 
 def send_friend_request(sender_id, recipient_id):
     if sender_id == recipient_id:
         raise ValueError("Нельзя добавить себя в друзья")
-    connection = connect_db()
     try:
-        cursor = connection.execute(
-            "INSERT INTO friendships (sender_id, recipient_id) VALUES (?, ?)",
-            (sender_id, recipient_id),
-        )
-        connection.commit()
-        return cursor.lastrowid
+        with transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO friendships (sender_id, recipient_id) VALUES (?, ?)", (sender_id, recipient_id)
+            )
+            return cursor.lastrowid
     except sqlite3.IntegrityError as error:
         if error.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
             raise ValueError("Заявка уже существует или вы уже друзья") from error
         if error.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY:
             raise ValueError("Пользователь не найден") from error
         raise
-    finally:
-        connection.close()
 
 
 def get_friendships(user_id):
-    connection = connect_db()
-    connection.row_factory = sqlite3.Row
-    try:
+    with transaction() as connection:
         rows = connection.execute("""
             SELECT f.id, f.sender_id, f.recipient_id, f.status,
                    u.id AS user_id, u.username, u.display_name
             FROM friendships AS f
-            JOIN users AS u ON u.id = CASE
-                WHEN f.sender_id = ? THEN f.recipient_id ELSE f.sender_id END
-            WHERE f.sender_id = ? OR f.recipient_id = ?
-            ORDER BY f.id DESC
+            JOIN users AS u ON u.id = CASE WHEN f.sender_id = ? THEN f.recipient_id ELSE f.sender_id END
+            WHERE f.sender_id = ? OR f.recipient_id = ? ORDER BY f.id DESC
         """, (user_id, user_id, user_id)).fetchall()
         return [dict(row) for row in rows]
-    finally:
-        connection.close()
 
 
 def respond_friend_request(request_id, user_id, accept):
-    connection = connect_db()
-    try:
-        if accept:
-            cursor = connection.execute(
-                "UPDATE friendships SET status = 'accepted' WHERE id = ? AND recipient_id = ? AND status = 'pending'",
-                (request_id, user_id),
-            )
-        else:
-            cursor = connection.execute(
-                "DELETE FROM friendships WHERE id = ? AND recipient_id = ? AND status = 'pending'",
-                (request_id, user_id),
-            )
-        connection.commit()
-        return cursor.rowcount > 0
-    finally:
-        connection.close()
+    with transaction() as connection:
+        query = (
+            "UPDATE friendships SET status = 'accepted' WHERE id = ? AND recipient_id = ? AND status = 'pending'"
+            if accept else "DELETE FROM friendships WHERE id = ? AND recipient_id = ? AND status = 'pending'"
+        )
+        return connection.execute(query, (request_id, user_id)).rowcount > 0
 
 
 def remove_friendship(request_id, user_id):
-    connection = connect_db()
-    try:
-        cursor = connection.execute("""
+    with transaction() as connection:
+        return connection.execute("""
             DELETE FROM friendships WHERE id = ? AND (
                 (status = 'accepted' AND (sender_id = ? OR recipient_id = ?))
                 OR (status = 'pending' AND sender_id = ?)
             )
-        """, (request_id, user_id, user_id, user_id))
-        connection.commit()
-        return cursor.rowcount > 0
-    finally:
-        connection.close()
+        """, (request_id, user_id, user_id, user_id)).rowcount > 0
 
 
 def save_session(token_hash, user_id, expires_at, now):
-    connection = connect_db()
-    try:
+    with transaction() as connection:
         connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
         connection.execute(
             "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
             (token_hash, user_id, expires_at),
         )
-        connection.commit()
-    finally:
-        connection.close()
 
 
 def get_session_user(token_hash, now):
-    connection = connect_db()
-    connection.row_factory = sqlite3.Row
-    try:
+    with transaction() as connection:
         row = connection.execute("""
             SELECT u.id, u.username, u.display_name
-            FROM sessions AS s
-            JOIN users AS u ON u.id = s.user_id
+            FROM sessions AS s JOIN users AS u ON u.id = s.user_id
             WHERE s.token_hash = ? AND s.expires_at > ?
         """, (token_hash, now)).fetchone()
         return dict(row) if row else None
-    finally:
-        connection.close()
 
 
 def delete_session(token_hash):
-    connection = connect_db()
-    try:
+    with transaction() as connection:
         connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
-        connection.commit()
-    finally:
-        connection.close()
+
+
+def login_blocked_until(username):
+    with transaction() as connection:
+        row = connection.execute("SELECT blocked_until FROM login_attempts WHERE username = ?", (username,)).fetchone()
+        return row[0] if row else 0
+
+
+def record_login_failure(username, now):
+    with transaction() as connection:
+        connection.execute("DELETE FROM login_attempts WHERE first_failure <= ? AND blocked_until <= ?", (now - 300, now))
+        connection.execute("""
+            INSERT INTO login_attempts(username, failures, first_failure) VALUES (?, 1, ?)
+            ON CONFLICT(username) DO UPDATE SET failures = failures + 1
+        """, (username, now))
+        connection.execute("UPDATE login_attempts SET blocked_until = ? WHERE username = ? AND failures >= 5", (now + 300, username))
+
+
+def clear_login_failures(username):
+    with transaction() as connection:
+        connection.execute("DELETE FROM login_attempts WHERE username = ?", (username,))
 
 
 if __name__ == "__main__":

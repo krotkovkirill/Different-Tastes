@@ -1,0 +1,10 @@
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:8550:8550"
+    volumes:
+      - tastes-data:/data
+    restart: unless-stopped
+volumes:
+  tastes-data:
