@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import closing
 import hashlib
 import io
 import sqlite3
@@ -17,6 +18,9 @@ import auth
 import database as db
 import main
 import media
+import widget_auth
+import server
+from fastapi.testclient import TestClient
 
 
 def photo_bytes(size=(80, 60), mode="RGB"):
@@ -212,8 +216,60 @@ class DatabaseCase(unittest.TestCase):
                              {"id", "username", "password_hash"})
         backups = list((db.DATA_DIR / "backups").glob("*.db"))
         self.assertEqual(len(backups), 1)
-        with sqlite3.connect(backups[0]) as connection:
+        with closing(sqlite3.connect(backups[0])) as connection:
             self.assertIn("display_name", {row[1] for row in connection.execute("PRAGMA table_info(users)")})
+
+    def test_widget_tokens_and_latest_api_privacy(self):
+        first = media.save_photo(media.normalize_photo(photo_bytes()))
+        own = db.save_post(first, 4, "", self.a)
+        private = db.save_post(first, 1, "private", self.b)
+        code = widget_auth.create_connection(self.a)
+        session = auth.create_session(self.a)
+        with db.transaction() as connection:
+            stored = connection.execute("SELECT token_hash FROM widget_tokens WHERE user_id=?", (self.a,)).fetchone()[0]
+            self.assertNotEqual(stored, code)
+        headers = {"Authorization": "Bearer " + code}
+        with TestClient(server.create_app()) as client:
+            for invalid in ({}, {"Authorization": "Bearer invalid"}, {"Authorization": "Bearer " + session}):
+                response = client.get("/api/widget/latest", headers=invalid)
+                self.assertEqual(response.status_code, 401)
+                self.assertIn("no-store", response.headers["cache-control"])
+            self.assertEqual(client.get("/api/widget/latest?token=" + code).status_code, 401)
+            response = client.get("/api/widget/latest", headers=headers)
+            self.assertEqual(response.status_code, 200)
+            post = response.json()["post"]
+            self.assertEqual(post["id"], own)
+            self.assertEqual(post["comment"], "")
+            self.assertNotIn("photo_path", post)
+            self.assertNotIn("password_hash", response.text)
+            import base64
+            with Image.open(io.BytesIO(base64.b64decode(post["image_base64"]))) as image:
+                self.assertLessEqual(max(image.size), 480)
+            request = db.send_friend_request(self.a, self.b)
+            db.respond_friend_request(request, self.b, True)
+            self.assertEqual(client.get("/api/widget/latest", headers=headers).json()["post"]["id"], private)
+            db.remove_friendship(request, self.a)
+            self.assertEqual(client.get("/api/widget/latest", headers=headers).json()["post"]["id"], own)
+            db.delete_post(own, self.a)
+            self.assertIsNone(client.get("/api/widget/latest", headers=headers).json()["post"])
+            replacement = widget_auth.create_connection(self.a)
+            self.assertEqual(client.get("/api/widget/latest", headers=headers).status_code, 401)
+            self.assertEqual(client.get("/api/widget/latest", headers={"Authorization": "Bearer " + replacement}).status_code, 200)
+            widget_auth.revoke_connections(self.a)
+            self.assertEqual(client.get("/api/widget/latest", headers={"Authorization": "Bearer " + replacement}).status_code, 401)
+            self.assertEqual(client.get("/data/different_tastes.db").status_code, 404)
+
+    def test_widget_expiry_and_password_revocation(self):
+        with patch.object(widget_auth.time, "time", return_value=1000):
+            code = widget_auth.create_connection(self.a)
+            self.assertEqual(widget_auth.connection_user(code), self.a)
+        with patch.object(widget_auth.time, "time", return_value=1000 + widget_auth.CONNECTION_TTL):
+            self.assertIsNone(widget_auth.connection_user(code))
+        for value in (None, "", "x" * 44, "\ud800" * 43):
+            self.assertIsNone(widget_auth.connection_user(value))
+        code = widget_auth.create_connection(self.a)
+        auth.change_password(self.a, "old-password", "updated")
+        self.assertIsNone(widget_auth.connection_user(code))
 
     def test_avatar_paths_and_account_reference(self):
         for path in ("../outside.jpg", "/etc/passwd", "photos/" + "a" * 32 + ".jpg", "avatars/../x.jpg"):
@@ -401,6 +457,31 @@ class ApplicationCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.app.profile_heading.value, "alice")
         self.assertEqual(self.app.profile_avatar.controls[0].width, 96)
         self.assertEqual(self.app.stats_posts.value, "14")
+
+    async def test_feed_camera_navigation_and_fixed_button(self):
+        self.assertEqual([item.label for item in self.app.navigation.destinations], ["Лента", "Друзья", "Профиль"])
+        self.assertIs(self.page.floating_action_button, self.app.snapshot_button)
+        self.assertTrue(self.app.snapshot_button.visible)
+        self.app.snapshot_button.on_click(None)
+        self.assertEqual(self.app.screen, 1)
+        self.assertFalse(self.app.snapshot_button.visible)
+        self.assertEqual(self.app.navigation.selected_index, 0)
+        self.app.camera_view.controls[0].on_click(None)
+        self.assertEqual(self.app.screen, 0)
+        self.assertTrue(self.app.snapshot_button.visible)
+        self.app.navigate(SimpleNamespace(control=SimpleNamespace(selected_index=1)))
+        self.assertEqual(self.app.screen, 2)
+        self.app.navigate(SimpleNamespace(control=SimpleNamespace(selected_index=2)))
+        self.assertEqual(self.app.screen, 3)
+        self.app.widget_dialog()
+        with patch.object(ft, "CopyToClipboard", return_value=None):
+            self.page.dialog.actions[2].on_click(None)
+        self.assertIsNotNone(db.get_widget_user(hashlib.sha256(self.page.dialog.content.content.controls[2].value.encode()).hexdigest(), 0))
+        self.page.dialog.actions[1].on_click(None)
+        with db.transaction() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM widget_tokens").fetchone()[0], 0)
+        await self.app.logout()
+        self.assertFalse(self.app.snapshot_button.visible)
 
     async def test_unified_sign_in_and_login(self):
         await self.app.logout()

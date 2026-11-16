@@ -62,6 +62,11 @@ def init_db():
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 expires_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS widget_tokens (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                expires_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS login_attempts (
                 username TEXT PRIMARY KEY,
                 failures INTEGER NOT NULL,
@@ -196,6 +201,7 @@ def update_password(user_id, expected_hash, new_hash):
         ).rowcount > 0
         if changed:
             connection.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM widget_tokens WHERE user_id = ?", (user_id,))
         return changed
 
 
@@ -322,3 +328,27 @@ def clear_login_failures(username):
 if __name__ == "__main__":
     init_db()
     print(f"База готова: {DB_PATH}")
+
+
+def save_widget_token(token_hash, user_id, expires_at, now):
+    with transaction() as connection:
+        connection.execute("DELETE FROM widget_tokens WHERE expires_at <= ?", (now,))
+        connection.execute(
+            "INSERT INTO widget_tokens(token_hash,user_id,expires_at) VALUES (?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET token_hash=excluded.token_hash, expires_at=excluded.expires_at",
+            (token_hash, user_id, expires_at),
+        )
+
+
+def get_widget_user(token_hash, now):
+    with transaction() as connection:
+        row = connection.execute(
+            "SELECT u.id FROM widget_tokens AS t JOIN users AS u ON u.id=t.user_id "
+            "WHERE t.token_hash=? AND t.expires_at>?", (token_hash, now),
+        ).fetchone()
+        return row["id"] if row else None
+
+
+def revoke_widget_tokens(user_id):
+    with transaction() as connection:
+        connection.execute("DELETE FROM widget_tokens WHERE user_id=?", (user_id,))

@@ -19,4 +19,4 @@ EXPOSE 8550
 VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s \
     CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8550')+'/',timeout=4)"
-CMD ["python", "1vDT/main.py"]
+CMD ["python", "1vDT/server.py"]

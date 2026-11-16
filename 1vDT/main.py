@@ -11,6 +11,7 @@ import flet_camera as fc
 import auth
 import database as db
 import media
+import widget_auth
 from auth_ui import create_auth_form
 from friends_ui import create_friends_panel
 from themes import PALETTES, THEME_STORAGE_KEY, ThemeSwitch
@@ -66,7 +67,7 @@ class Application:
             ft.Row(controls=[ft.Text("Лента", size=32, weight=ft.FontWeight.BOLD, expand=True),
                 ft.IconButton(icon=ft.Icons.REFRESH_ROUNDED, tooltip="Обновить ленту", icon_size=28, width=48, height=48, on_click=self.refresh_feed)]),
             ft.Row(controls=[self.all_filter, self.own_filter], spacing=12),
-            self.empty_feed, self.feed, self.more_button,
+            self.empty_feed, self.feed, self.more_button, ft.Container(height=80),
         ])
         self.camera_slot = ft.Container(visible=False, alignment=ft.Alignment.CENTER)
         self.preview = ft.Container(visible=False, alignment=ft.Alignment.CENTER)
@@ -108,7 +109,9 @@ class Application:
             ft.Row(controls=[self.connect_button, self.capture_button, self.switch_camera_button], spacing=8),
             self.gallery_button, self.draft,
         ]), padding=16)
-        self.camera_view = stack([ft.Text("Новый вкус", size=32, weight=ft.FontWeight.BOLD), self.composer], visible=False)
+        self.camera_view = stack([ft.TextButton(content="В ленту", icon=ft.Icons.ARROW_BACK,
+            on_click=lambda e: self.show_screen(0), height=44),
+            ft.Text("Новый вкус", size=32, weight=ft.FontWeight.BOLD), self.composer], visible=False)
         self.friends_slot = stack([])
         self.friends_view = stack([self.friends_slot], visible=False)
         self.profile_heading = ft.Text("", size=28, weight=ft.FontWeight.BOLD)
@@ -126,19 +129,27 @@ class Application:
                                  ft.Column(controls=[self.stats_friends, ft.Text("друзей", color=MUTED)], expand=True)]),
             ])),
             self.avatar_button,
+            ft.OutlinedButton(content="Виджет iPhone", icon=ft.Icons.WIDGETS_OUTLINED,
+                height=56, on_click=self.widget_dialog),
             ft.TextButton(content="Выйти из аккаунта", icon=ft.Icons.LOGOUT, height=56, on_click=self.logout),
         ], visible=False)
         self.views = [self.feed_view, self.camera_view, self.friends_view, self.profile_view]
         self.app_view = stack(self.views, visible=False)
-        destinations = [("Лента", ft.Icons.HOME_OUTLINED, ft.Icons.HOME),
-                        ("Снимок", ft.Icons.ADD_A_PHOTO_OUTLINED, ft.Icons.ADD_A_PHOTO),
-                        ("Друзья", ft.Icons.PEOPLE_OUTLINE, ft.Icons.PEOPLE),
-                        ("Профиль", ft.Icons.PERSON_OUTLINE, ft.Icons.PERSON)]
+        destinations = [(0, "Лента", ft.Icons.HOME_OUTLINED, ft.Icons.HOME),
+                        (2, "Друзья", ft.Icons.PEOPLE_OUTLINE, ft.Icons.PEOPLE),
+                        (3, "Профиль", ft.Icons.PERSON_OUTLINE, ft.Icons.PERSON)]
+        self.navigation_screens = [item[0] for item in destinations]
         self.navigation = ft.NavigationBar(destinations=[ft.NavigationBarDestination(icon=icon, selected_icon=selected, label=label)
-            for label, icon, selected in destinations], selected_index=0, visible=False, on_change=self.navigate)
+            for _, label, icon, selected in destinations], selected_index=0, visible=False, on_change=self.navigate)
         page.navigation_bar = self.navigation
+        self.snapshot_button = ft.FloatingActionButton(content=ft.Row(
+            controls=[ft.Icon(ft.Icons.CAMERA_ALT_OUTLINED), ft.Text("Снимок", weight=ft.FontWeight.BOLD)],
+            tight=True, spacing=8), tooltip="Сделать снимок", width=140, height=56, shape=ft.RoundedRectangleBorder(radius=28),
+            bgcolor=ACCENT, foreground_color="#FFFFFF", visible=False, on_click=lambda e: self.show_screen(1))
+        page.floating_action_button = self.snapshot_button
+        page.floating_action_button_location = ft.FloatingActionButtonLocation.END_FLOAT
         self.sidebar_buttons = [ft.TextButton(content=label, icon=icon, height=56,
-            on_click=lambda e, index=index: self.show_screen(index)) for index, (label, icon, _) in enumerate(destinations)]
+            on_click=lambda e, screen=screen: self.show_screen(screen)) for screen, label, icon, _ in destinations]
         self.sidebar = ft.Container(content=stack([
             ft.Row(controls=[ft.Icon(ft.Icons.RESTAURANT_ROUNDED, color=ACCENT, size=28),
                              ft.Text("Different\nTastes", size=24, weight=ft.FontWeight.BOLD)], spacing=12),
@@ -215,6 +226,7 @@ class Application:
         gutter = 32 if width >= 600 else 16
         self.sidebar.visible = desktop
         self.navigation.visible = self.user is not None and not desktop
+        self.snapshot_button.visible = self.user is not None and self.screen == 0
         available = width - (232 if desktop else 0) - 2 * gutter
         content_width = min(720 if self.user else 480, max(240, available))
         self.header.width = self.body.width = content_width
@@ -237,6 +249,7 @@ class Application:
         self.busy = value
         self.composer.disabled = value
         self.navigation.disabled = value
+        self.snapshot_button.disabled = value
         self.profile_view.disabled = value
         self.sidebar.disabled = value
         self.loading.visible = value and self.user is None
@@ -286,6 +299,7 @@ class Application:
         self.friends_slot.controls.clear()
         self.friend_panel = None
         self.app_view.visible = False
+        self.snapshot_button.visible = False
         self.notice.visible = False
         self.auth_form = create_auth_form(self.page, self.authenticated)
         self.auth_form.error_text.value = message
@@ -325,7 +339,7 @@ class Application:
             self.page.run_task(self.scroll_top)
 
     def navigate(self, event):
-        self.show_screen(event.control.selected_index)
+        self.show_screen(self.navigation_screens[event.control.selected_index])
 
     def show_screen(self, index):
         if self.busy or not self.require_login():
@@ -334,12 +348,14 @@ class Application:
             self.release_camera()
         changed_screen = self.screen != index
         self.screen = index
-        self.navigation.selected_index = index
+        selected_tab = 0 if index == 1 else self.navigation_screens.index(index)
+        self.navigation.selected_index = selected_tab
+        self.snapshot_button.visible = index == 0
         self.notice.visible = False
         for i, view in enumerate(self.views):
             view.visible = i == index
         for i, button in enumerate(self.sidebar_buttons):
-            button.style = ft.ButtonStyle(bgcolor=SOFT if i == index else "transparent", color=ACCENT if i == index else MUTED,
+            button.style = ft.ButtonStyle(bgcolor=SOFT if i == selected_tab else "transparent", color=ACCENT if i == selected_tab else MUTED,
                 alignment=ft.Alignment.CENTER_LEFT, shape=ft.RoundedRectangleBorder(radius=14))
         if index == 0:
             self.refresh_feed()
@@ -703,6 +719,46 @@ class Application:
             self.stats_friends.value = str(stats["friends"])
         except sqlite3.Error:
             self.tell("Не удалось загрузить профиль. Попробуй ещё раз.", True)
+
+    def widget_dialog(self, event=None):
+        if self.busy or not self.require_login():
+            return
+        content = stack([
+            ft.Text("Виджет показывает последнюю публикацию твоей ленты. Для него нужно установить приложение Different Tastes на iPhone.", size=18),
+            ft.Text("Сборка iOS-приложения пока готовится. Сайт сам по себе не устанавливает живые виджеты.", size=16, color=MUTED),
+        ], tight=True)
+        def generate(event):
+            if not self.require_login():
+                return
+            try:
+                token = widget_auth.create_connection(self.user["id"])
+            except sqlite3.Error:
+                self.tell("Не удалось создать подключение. Попробуй ещё раз.", True)
+                return
+            content.controls = [
+                ft.Text("Вставь код в приложение Different Tastes на iPhone.", size=18),
+                ft.Text("Он открывает доступ только к последней публикации твоей ленты. Не отправляй его другим. Новый код отключает старый.", size=16, color=MUTED),
+                text_field("Код подключения", value=token, read_only=True, password=True, can_reveal_password=True),
+                ft.Button(content="Скопировать код", height=52, action=ft.CopyToClipboard(token),
+                    on_click=lambda e: ft.context.disable_auto_update()),
+            ]
+            self.page.update()
+        def revoke(event):
+            if not self.require_login():
+                return
+            try:
+                widget_auth.revoke_connections(self.user["id"])
+            except sqlite3.Error:
+                self.tell("Не удалось отключить виджет. Попробуй ещё раз.", True)
+                return
+            self.page.pop_dialog()
+            self.tell("Доступ виджета отключён")
+        self.page.show_dialog(ft.AlertDialog(modal=True, title=ft.Text("Виджет iPhone"),
+            content=ft.Container(content=content, width=360), actions=[
+                ft.TextButton(content="Закрыть", on_click=lambda e: self.page.pop_dialog()),
+                ft.TextButton(content="Отключить доступ", on_click=revoke),
+                ft.Button(content="Создать код", on_click=generate),
+            ]))
 
     def avatar_picker_opened(self, event=None):
         ft.context.disable_auto_update()

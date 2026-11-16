@@ -1,0 +1,26 @@
+name: iOS widget build
+on:
+  push:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios.yml'
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check shared API models
+        run: |
+          swiftc -swift-version 5 ios/DifferentTastes/Shared/WidgetConnection.swift ios/Tests/ModelChecks.swift -o /tmp/widget-model-checks
+          /tmp/widget-model-checks
+      - name: Build app and WidgetKit extension for simulator
+        run: >-
+          xcodebuild -project ios/DifferentTastes/DifferentTastes.xcodeproj
+          -scheme DifferentTastes -configuration Debug -sdk iphonesimulator
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
