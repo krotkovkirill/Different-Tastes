@@ -4,7 +4,6 @@ import logging
 import os
 import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 
 import flet as ft
 import flet_camera as fc
@@ -15,7 +14,7 @@ import media
 from auth_ui import create_auth_form
 from friends_ui import create_friends_panel
 from themes import PALETTES, THEME_STORAGE_KEY, ThemeSwitch
-from ui import CARD, ACCENT, ERROR, INK, LINE, MUTED, PAPER, SOFT, avatar, configure_page, primary, stack, surface, sync_text, text_field
+from ui import CARD, ACCENT, ERROR, INK, LINE, MUTED, SOFT, avatar, configure_page, primary, stack, surface, sync_text, text_field
 
 logger = logging.getLogger(__name__)
 PAGE_SIZE = 12
@@ -31,6 +30,8 @@ class Application:
         self.theme_save_lock = asyncio.Lock()
         self.theme_switch = ThemeSwitch(self.change_theme)
         self.picker = ft.FilePicker(on_result=self.photo_selected)
+        self.avatar_picker = ft.FilePicker(on_result=self.avatar_selected)
+        self.avatar_picker_token = None
         self.user = None
         self.token = None
         self.busy = False
@@ -39,6 +40,9 @@ class Application:
         self.photo_picker_token = None
         self.camera_ready = False
         self.camera = fc.Camera()
+        self.camera_devices = []
+        self.camera_index = None
+        self.selected_camera_name = None
         self.feed_mode = "friends"
         self.cursor = None
         self.friend_panel = None
@@ -64,8 +68,8 @@ class Application:
             ft.Row(controls=[self.all_filter, self.own_filter], spacing=12),
             self.empty_feed, self.feed, self.more_button,
         ])
-        self.camera_slot = stack([])
-        self.preview = stack([], visible=False)
+        self.camera_slot = ft.Container(visible=False, alignment=ft.Alignment.CENTER)
+        self.preview = ft.Container(visible=False, alignment=ft.Alignment.CENTER)
         self.comment = text_field("Отзыв", hint_text="Можно оставить пустым", on_change=sync_text)
         self.rating = None
         self.rating_buttons = [ft.IconButton(icon=ft.Icons.STAR_BORDER_ROUNDED, icon_size=34,
@@ -73,7 +77,6 @@ class Application:
         self.rating_error = ft.Text("", color=ERROR, visible=False)
         self.publish_button = primary("Опубликовать", self.publish, icon=ft.Icons.ARROW_UPWARD_ROUNDED)
         self.draft = stack([
-            self.preview,
             ft.Text("Как тебе?", size=24, weight=ft.FontWeight.BOLD),
             ft.Row(controls=self.rating_buttons, spacing=0, alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             self.rating_error, self.comment, self.publish_button,
@@ -81,17 +84,30 @@ class Application:
         ], visible=False)
         self.connect_button = primary("Открыть камеру", self.open_camera, icon=ft.Icons.CAMERA_ALT_OUTLINED)
         self.capture_button = primary("Сделать снимок", self.take_photo, icon=ft.Icons.CAMERA, visible=False)
+        self.connect_button.expand = self.capture_button.expand = True
+        self.switch_camera_button = ft.IconButton(icon=ft.Icons.CAMERASWITCH_OUTLINED,
+            tooltip="Переключить камеру", width=56, height=56,
+            on_click=self.switch_camera, visible=False, bgcolor=SOFT, icon_color=ACCENT)
         self.gallery_button = ft.OutlinedButton(content="Выбрать из галереи", icon=ft.Icons.PHOTO_LIBRARY_OUTLINED,
             height=56, on_click=self.photo_picker_opened, action=ft.PickFiles(self.picker,
                 file_type=ft.FilePickerFileType.IMAGE, allow_multiple=False,
                 with_data=True, cancel_upload_on_window_blur=False))
         self.camera_hint = ft.Container(
-            content=stack([ft.Icon(ft.Icons.CAMERA_ALT_OUTLINED, size=64, color=ACCENT),
-                ft.Text("Один снимок. Твой вкус.", size=26, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER)], spacing=20),
-            padding=32, alignment=ft.Alignment.CENTER, bgcolor=SOFT, border_radius=24,
+            content=ft.Column(controls=[ft.Icon(ft.Icons.CAMERA_ALT_OUTLINED, size=52, color=ACCENT),
+                ft.Text("Что попробуем?", size=24, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER)],
+                alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=16),
+            padding=24, alignment=ft.Alignment.CENTER,
         )
-        self.composer = surface(stack([self.camera_hint, self.connect_button, self.gallery_button,
-                                     self.camera_slot, self.capture_button, self.draft]), padding=20)
+        self.frame_progress = ft.Container(content=ft.ProgressRing(width=32, height=32),
+            alignment=ft.Alignment.CENTER, bgcolor="#55000000", visible=False)
+        self.media_frame = ft.Container(content=ft.Stack(
+            controls=[self.camera_hint, self.camera_slot, self.preview, self.frame_progress], fit=ft.StackFit.EXPAND),
+            width=324, height=324, bgcolor=SOFT, border_radius=20, clip_behavior=ft.ClipBehavior.ANTI_ALIAS)
+        self.composer = surface(stack([
+            ft.Row(controls=[self.media_frame], alignment=ft.MainAxisAlignment.CENTER),
+            ft.Row(controls=[self.connect_button, self.capture_button, self.switch_camera_button], spacing=8),
+            self.gallery_button, self.draft,
+        ]), padding=16)
         self.camera_view = stack([ft.Text("Новый вкус", size=32, weight=ft.FontWeight.BOLD), self.composer], visible=False)
         self.friends_slot = stack([])
         self.friends_view = stack([self.friends_slot], visible=False)
@@ -99,13 +115,17 @@ class Application:
         self.profile_avatar = ft.Row(controls=[])
         self.stats_posts = ft.Text("0", size=32, weight=ft.FontWeight.BOLD)
         self.stats_friends = ft.Text("0", size=32, weight=ft.FontWeight.BOLD)
+        self.avatar_button = ft.OutlinedButton(content="Добавить аватарку", icon=ft.Icons.ADD_A_PHOTO_OUTLINED,
+            height=56, on_click=self.avatar_picker_opened, action=ft.PickFiles(self.avatar_picker,
+                file_type=ft.FilePickerFileType.IMAGE, with_data=True, allow_multiple=False,
+                cancel_upload_on_window_blur=False))
         self.profile_view = stack([
             ft.Text("Профиль", size=32, weight=ft.FontWeight.BOLD),
             surface(stack([self.profile_avatar, self.profile_heading,
                 ft.Row(controls=[ft.Column(controls=[self.stats_posts, ft.Text("публикаций", color=MUTED)], expand=True),
                                  ft.Column(controls=[self.stats_friends, ft.Text("друзей", color=MUTED)], expand=True)]),
             ])),
-            ft.OutlinedButton(content="Сменить пароль", height=56, on_click=self.password_dialog),
+            self.avatar_button,
             ft.TextButton(content="Выйти из аккаунта", icon=ft.Icons.LOGOUT, height=56, on_click=self.logout),
         ], visible=False)
         self.views = [self.feed_view, self.camera_view, self.friends_view, self.profile_view]
@@ -200,8 +220,10 @@ class Application:
         self.header.width = self.body.width = content_width
         self.brand_title.size = 16 if content_width < 340 else 20 if content_width < 440 else 24
         self.main_area.padding = ft.Padding.symmetric(horizontal=gutter, vertical=16)
-        self.camera.width = max(1, content_width - 42)
-        self.camera.height = self.camera.width * 3 / 4
+        size = max(1, min(420, content_width - 34))
+        self.media_frame.width = self.media_frame.height = size
+        if self.preview.content is not None:
+            self.preview.content.width = self.preview.content.height = size
         self.page.update()
 
     def tell(self, message, error=False):
@@ -217,7 +239,8 @@ class Application:
         self.navigation.disabled = value
         self.profile_view.disabled = value
         self.sidebar.disabled = value
-        self.loading.visible = value
+        self.loading.visible = value and self.user is None
+        self.frame_progress.visible = value and self.screen == 1
         self.page.update()
 
     def require_login(self):
@@ -391,7 +414,7 @@ class Application:
             date = ""
         return ft.Container(bgcolor=CARD, border=ft.Border.all(1, LINE), border_radius=24,
             clip_behavior=ft.ClipBehavior.ANTI_ALIAS, content=stack([
-                ft.Container(padding=16, content=ft.Row(controls=[avatar(post["username"]),
+                ft.Container(padding=16, content=ft.Row(controls=[avatar(post["username"], avatar_path=post.get("avatar_path")),
                     ft.Text(post["username"], size=21, weight=ft.FontWeight.BOLD, expand=True,
                             max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, tooltip=f"@{post['username']}"), menu])),
                 ft.Container(content=image, bgcolor=SOFT),
@@ -462,10 +485,14 @@ class Application:
                      ft.Button(content="Сохранить", on_click=save)]))
 
     def release_camera(self):
-        self.camera_slot.controls.clear()
+        self.camera_slot.content = None
+        self.camera_slot.visible = False
         self.camera_ready = False
         self.camera = fc.Camera()
+        self.camera_devices = []
+        self.camera_index = None
         self.capture_button.visible = False
+        self.switch_camera_button.visible = False
         self.preview.visible = bool(self.photo_data)
         self.draft.visible = bool(self.photo_data)
         self.camera_hint.visible = not bool(self.photo_data)
@@ -478,8 +505,9 @@ class Application:
             return
         token = self.token
         self.set_busy(True)
-        self.camera_slot.controls = [self.camera]
-        self.camera_hint.visible = False
+        self.camera_slot.content = self.camera
+        self.camera_slot.visible = True
+        self.camera_hint.visible = self.preview.visible = self.draft.visible = False
         self.resize()
         try:
             cameras = await self.camera.get_available_cameras()
@@ -487,15 +515,21 @@ class Application:
                 return
             if not cameras:
                 raise ValueError("Камера не найдена. Можно выбрать фото из галереи.")
-            camera = next((c for c in cameras if getattr(c, "lens_direction", None) == fc.CameraLensDirection.BACK), cameras[0]) if hasattr(fc, "CameraLensDirection") else cameras[0]
-            await self.camera.initialize(description=camera, resolution_preset=fc.ResolutionPreset.HIGH, enable_audio=False)
+            preferred = next((i for i, camera in enumerate(cameras)
+                if camera.lens_direction == fc.CameraLensDirection.BACK), 0)
+            index = next((i for i, camera in enumerate(cameras)
+                if camera.name == self.selected_camera_name), preferred)
+            await self.camera.initialize(description=cameras[index],
+                resolution_preset=fc.ResolutionPreset.HIGH, enable_audio=False)
             if token != self.token or not self.require_login():
                 return
+            self.camera_devices = cameras
+            self.camera_index = index
+            self.selected_camera_name = cameras[index].name
             self.camera_ready = True
             self.capture_button.visible = True
+            self.switch_camera_button.visible = len(cameras) > 1
             self.connect_button.visible = False
-            self.preview.visible = False
-            self.draft.visible = False
         except ValueError as exc:
             self.release_camera()
             self.tell(str(exc), True)
@@ -503,6 +537,33 @@ class Application:
             logger.warning("Camera could not be opened", exc_info=True)
             self.release_camera()
             self.tell("Не удалось открыть камеру. Разреши доступ в браузере или выбери фото из галереи.", True)
+        finally:
+            self.set_busy(False)
+
+    async def switch_camera(self, event=None):
+        if self.busy or not self.camera_ready or not self.require_login() or len(self.camera_devices) < 2:
+            return
+        token = self.token
+        old_index = self.camera_index
+        old_camera = self.camera_devices[old_index]
+        target_direction = (fc.CameraLensDirection.FRONT if old_camera.lens_direction == fc.CameraLensDirection.BACK
+                            else fc.CameraLensDirection.BACK)
+        index = next((i for i, camera in enumerate(self.camera_devices)
+            if camera.lens_direction == target_direction), (old_index + 1) % len(self.camera_devices))
+        self.set_busy(True)
+        try:
+            await self.camera.set_description(self.camera_devices[index])
+            if token == self.token and self.require_login():
+                self.camera_index = index
+                self.selected_camera_name = self.camera_devices[index].name
+        except Exception:
+            logger.warning("Camera switch failed", exc_info=True)
+            if token == self.token and self.require_login():
+                try:
+                    await self.camera.set_description(old_camera)
+                except Exception:
+                    self.release_camera()
+                self.tell("Не удалось переключить камеру. Можно попробовать ещё раз.", True)
         finally:
             self.set_busy(False)
 
@@ -553,7 +614,8 @@ class Application:
     def accept_photo(self, data):
         self.photo_data = data
         self.release_camera()
-        self.preview.controls = [self.image(data, square=False)]
+        self.preview.content = ft.Image(src=base64.b64encode(data).decode("ascii"),
+            width=self.media_frame.width, height=self.media_frame.height, fit=ft.BoxFit.CONTAIN)
         self.preview.visible = True
         self.draft.visible = True
         self.camera_hint.visible = False
@@ -574,7 +636,7 @@ class Application:
         self.comment.value = ""
         self.comment.error_text = None
         self.rating_error.visible = False
-        self.preview.controls.clear()
+        self.preview.content = None
         self.preview.visible = False
         self.draft.visible = False
         self.camera_hint.visible = True
@@ -633,7 +695,8 @@ class Application:
         if not self.require_login():
             return
         self.profile_heading.value = self.user["username"]
-        self.profile_avatar.controls = [avatar(self.user["username"], 64)]
+        self.profile_avatar.controls = [avatar(self.user["username"], 96, self.user.get("avatar_path"))]
+        self.avatar_button.content = "Изменить аватарку" if self.user.get("avatar_path") else "Добавить аватарку"
         try:
             stats = db.get_stats(self.user["id"])
             self.stats_posts.value = str(stats["posts"])
@@ -641,51 +704,49 @@ class Application:
         except sqlite3.Error:
             self.tell("Не удалось загрузить профиль. Попробуй ещё раз.", True)
 
-    def password_dialog(self, event=None):
-        if self.busy or not self.require_login():
+    def avatar_picker_opened(self, event=None):
+        ft.context.disable_auto_update()
+        self.avatar_picker_token = self.token
+
+    async def avatar_selected(self, event):
+        if self.busy or not event.files or not self.require_login():
             return
-        current = text_field("Текущий пароль", password=True, can_reveal_password=True, on_change=sync_text)
-        new = text_field("Новый пароль", password=True, can_reveal_password=True, on_change=sync_text)
-        repeat = text_field("Повтори новый пароль", password=True, can_reveal_password=True, on_change=sync_text)
-        error = ft.Text("", color=ERROR, visible=False)
-        async def save(event):
-            if self.busy or not self.require_login():
-                return
-            if (new.value or "") != (repeat.value or ""):
-                error.value = "Пароли не совпадают"
-                error.visible = True
-                self.page.update()
-                return
-            values = (self.user["id"], current.value or "", new.value or "")
-            self.set_busy(True)
-            save_button.disabled = True
-            cancel_button.disabled = True
-            self.page.update()
+        token = self.avatar_picker_token
+        if token != self.token:
+            return
+        user_id = self.user["id"]
+        def store():
+            file = event.files[0]
+            if file.size > media.MAX_PHOTO_BYTES:
+                raise ValueError("Фотография должна быть не больше 8 МБ")
+            data = media.normalize_avatar(bytes(file.bytes or b""))
+            session_user = auth.resume_session(token)
+            if not session_user or session_user["id"] != user_id:
+                raise ValueError("Войди в аккаунт ещё раз")
+            path = media.save_avatar(data)
             try:
-                await asyncio.to_thread(auth.change_password, *values)
-            except ValueError as exc:
-                error.value = str(exc)
-                error.visible = True
-            except sqlite3.Error:
-                error.value = "Не удалось сменить пароль. Попробуй ещё раз."
-                error.visible = True
-            else:
-                current.value = new.value = repeat.value = ""
-                self.page.pop_dialog()
+                previous = db.set_avatar(user_id, path)
+            except Exception:
+                media.delete_avatar(path)
+                raise
+            if previous:
                 try:
-                    await self.preferences.remove(auth.SESSION_STORAGE_KEY)
-                except Exception:
-                    pass
-                self.clear_login("Пароль изменён. Войди с новым паролем.")
-            finally:
-                save_button.disabled = False
-                cancel_button.disabled = False
-                self.set_busy(False)
-        save_button = ft.Button(content="Сменить пароль", on_click=save)
-        cancel_button = ft.TextButton(content="Отмена", on_click=lambda e: None if self.busy else self.page.pop_dialog())
-        self.page.show_dialog(ft.AlertDialog(modal=True, title=ft.Text("Смена пароля"),
-            content=stack([current, new, repeat, error], tight=True),
-            actions=[cancel_button, save_button]))
+                    media.delete_avatar(previous)
+                except (OSError, ValueError):
+                    logger.warning("Could not remove previous avatar", exc_info=True)
+        self.set_busy(True)
+        try:
+            await asyncio.to_thread(store)
+            if token == self.token and self.require_login():
+                self.load_profile()
+                self.tell("Аватарка обновлена")
+        except ValueError as exc:
+            self.tell(str(exc), True)
+        except (OSError, sqlite3.Error):
+            logger.exception("Could not save avatar")
+            self.tell("Аватарка не сохранилась. Попробуй ещё раз.", True)
+        finally:
+            self.set_busy(False)
 
 
 async def main(page: ft.Page):

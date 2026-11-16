@@ -83,3 +83,47 @@ def read_photo(stored_path):
 
 def delete_photo(stored_path):
     photo_file(stored_path).unlink(missing_ok=True)
+
+
+def normalize_avatar(data):
+    normalized = normalize_photo(data)
+    with Image.open(io.BytesIO(normalized)) as image:
+        image = ImageOps.fit(image, (512, 512), method=Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=88, optimize=True)
+        return output.getvalue()
+
+
+def avatar_file(stored_path):
+    folder = (database.DATA_DIR / "avatars").resolve()
+    path = Path(stored_path)
+    if path.is_absolute() or not re.fullmatch(r"avatars/[a-f0-9]{32}\.jpg", path.as_posix()):
+        raise ValueError("Недопустимый путь к аватарке")
+    path = (database.DATA_DIR / path).resolve()
+    if path.parent != folder:
+        raise ValueError("Недопустимый путь к аватарке")
+    return path
+
+
+def save_avatar(data):
+    folder = database.DATA_DIR / "avatars"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{uuid4().hex}.jpg"
+    try:
+        path.write_bytes(data)
+    except OSError:
+        path.unlink(missing_ok=True)
+        raise
+    return f"avatars/{path.name}"
+
+
+def read_avatar(stored_path):
+    with avatar_file(stored_path).open("rb") as stream:
+        data = stream.read(1024 * 1024 + 1)
+    if len(data) > 1024 * 1024:
+        raise ValueError("Слишком большой файл аватарки")
+    return data
+
+
+def delete_avatar(stored_path):
+    avatar_file(stored_path).unlink(missing_ok=True)

@@ -1,4 +1,7 @@
+import base64
+
 import flet as ft
+import media
 
 INK = ft.Colors.ON_SURFACE
 MUTED = ft.Colors.ON_SURFACE_VARIANT
@@ -54,7 +57,16 @@ def primary(label, on_click, **kwargs):
     return ft.Button(content=label, height=56, on_click=on_click, **kwargs)
 
 
-def avatar(name, size=48):
+def avatar(name, size=48, avatar_path=None):
+    if avatar_path:
+        try:
+            data = media.read_avatar(avatar_path)
+            return ft.Container(
+                content=ft.Image(src=base64.b64encode(data).decode(), width=size, height=size, fit=ft.BoxFit.COVER),
+                width=size, height=size, border_radius=size / 2, clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            )
+        except (OSError, ValueError):
+            pass
     return ft.Container(
         content=ft.Text((name.strip()[:1] or "?").upper(), size=22, weight=ft.FontWeight.BOLD, color=ACCENT),
         width=size, height=size, bgcolor=SOFT, border_radius=size / 2,

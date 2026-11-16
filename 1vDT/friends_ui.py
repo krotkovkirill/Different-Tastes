@@ -39,7 +39,7 @@ class FriendsPanel(ft.Column):
 
     def person(self, person, actions):
         return surface(stack([
-            ft.Row(controls=[avatar(person["username"]),
+            ft.Row(controls=[avatar(person["username"], avatar_path=person.get("avatar_path")),
                 ft.Text(person["username"], size=20, weight=ft.FontWeight.BOLD,
                         max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, expand=True),
             ]),

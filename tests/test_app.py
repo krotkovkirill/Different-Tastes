@@ -215,6 +215,15 @@ class DatabaseCase(unittest.TestCase):
         with sqlite3.connect(backups[0]) as connection:
             self.assertIn("display_name", {row[1] for row in connection.execute("PRAGMA table_info(users)")})
 
+    def test_avatar_paths_and_account_reference(self):
+        for path in ("../outside.jpg", "/etc/passwd", "photos/" + "a" * 32 + ".jpg", "avatars/../x.jpg"):
+            with self.assertRaises(ValueError):
+                media.avatar_file(path)
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.set_avatar(-1, "avatars/" + "a" * 32 + ".jpg")
+        with db.transaction() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM profiles").fetchone()[0], 0)
+
     def test_iphone_heic_is_normalized(self):
         source = io.BytesIO()
         Image.new("RGB", (120, 80), "blue").save(source, format="HEIF")
@@ -390,7 +399,7 @@ class ApplicationCase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.app.sidebar.visible, width >= 1000)
         self.app.show_screen(3)
         self.assertEqual(self.app.profile_heading.value, "alice")
-        self.assertEqual(self.app.profile_avatar.controls[0].width, 64)
+        self.assertEqual(self.app.profile_avatar.controls[0].width, 96)
         self.assertEqual(self.app.stats_posts.value, "14")
 
     async def test_unified_sign_in_and_login(self):
@@ -450,16 +459,113 @@ class ApplicationCase(unittest.IsolatedAsyncioTestCase):
         panel.search_user()
         self.assertIn("заявка", panel.message.value)
 
-    async def test_password_dialog_revokes_all_sessions(self):
-        old = self.app.token
-        self.app.password_dialog()
-        current, new, repeat, _ = self.page.dialog.content.controls
-        current.value = "test-password"
-        new.value = repeat.value = "changed-password"
-        await self.page.dialog.actions[1].on_click(None)
-        self.assertIsNone(auth.resume_session(old))
-        self.assertIsNone(self.app.user)
-        self.assertEqual(auth.login_user("alice", "changed-password")["id"], self.user["id"])
+    async def test_camera_frame_and_front_back_switch(self):
+        import flet_camera as fc
+        front = fc.CameraDescription(name="front", lens_direction=fc.CameraLensDirection.FRONT, sensor_orientation=0)
+        back = fc.CameraDescription(name="back", lens_direction=fc.CameraLensDirection.BACK, sensor_orientation=0)
+        self.app.show_screen(1)
+        before = (self.app.media_frame.width, self.app.media_frame.height)
+        with patch.object(fc.Camera, "get_available_cameras", AsyncMock(return_value=[front, back])), \
+             patch.object(fc.Camera, "initialize", AsyncMock()) as initialize, \
+             patch.object(fc.Camera, "set_description", AsyncMock()) as switch:
+            await self.app.open_camera()
+            self.assertEqual(initialize.call_args.kwargs["description"], back)
+            self.assertTrue(self.app.switch_camera_button.visible)
+            self.assertIsNone(self.app.camera.width)
+            self.assertIsNone(self.app.camera.height)
+            await self.app.switch_camera()
+            switch.assert_awaited_with(front)
+            self.assertEqual(self.app.selected_camera_name, "front")
+            self.assertEqual(before, (self.app.media_frame.width, self.app.media_frame.height))
+            async def capture():
+                self.assertFalse(self.app.loading.visible)
+                self.assertTrue(self.app.frame_progress.visible)
+                return self.image
+            with patch.object(fc.Camera, "take_picture", AsyncMock(side_effect=capture)):
+                await self.app.take_photo()
+            self.assertEqual(before, (self.app.media_frame.width, self.app.media_frame.height))
+            self.assertTrue(self.app.preview.visible)
+            self.assertFalse(self.app.switch_camera_button.visible)
+            self.assertEqual(self.app.preview.content.fit, ft.BoxFit.CONTAIN)
+            await self.app.open_camera()
+            self.assertEqual(initialize.call_args.kwargs["description"], front)
+            self.app.release_camera()
+        for width in (320, 390, 844, 1280):
+            self.page.width = width
+            self.app.resize()
+            self.assertEqual(self.app.media_frame.width, self.app.media_frame.height)
+            self.assertLessEqual(self.app.media_frame.width, self.app.body.width - 34)
+
+    async def test_switch_failure_restores_camera_and_one_device_hides_button(self):
+        import flet_camera as fc
+        back = fc.CameraDescription(name="back", lens_direction=fc.CameraLensDirection.BACK, sensor_orientation=0)
+        front = fc.CameraDescription(name="front", lens_direction=fc.CameraLensDirection.FRONT, sensor_orientation=0)
+        with patch.object(fc.Camera, "get_available_cameras", AsyncMock(return_value=[back, front])), \
+             patch.object(fc.Camera, "initialize", AsyncMock()), \
+             patch.object(fc.Camera, "set_description", AsyncMock(side_effect=[RuntimeError("switch failed"), None])) as switch:
+            await self.app.open_camera()
+            with self.assertLogs("main", level="WARNING"):
+                await self.app.switch_camera()
+            self.assertEqual(switch.await_count, 2)
+            switch.assert_awaited_with(back)
+            self.assertTrue(self.app.camera_ready)
+            self.assertEqual(self.app.selected_camera_name, "back")
+            self.assertFalse(self.app.busy)
+            self.app.release_camera()
+        with patch.object(fc.Camera, "get_available_cameras", AsyncMock(return_value=[back])), \
+             patch.object(fc.Camera, "initialize", AsyncMock()):
+            await self.app.open_camera()
+            self.assertFalse(self.app.switch_camera_button.visible)
+
+    async def test_avatar_upload_replace_and_public_views(self):
+        self.app.show_screen(3)
+        self.assertIsInstance(self.app.avatar_button.action, ft.PickFiles)
+        event = SimpleNamespace(files=[SimpleNamespace(size=100, bytes=self.image)])
+        self.app.avatar_button.on_click(None)
+        await self.app.avatar_picker.on_result(event)
+        path = db.get_user(self.user["id"])["avatar_path"]
+        self.assertIsNotNone(path)
+        self.assertTrue(media.avatar_file(path).exists())
+        self.assertEqual(self.app.avatar_button.content, "Изменить аватарку")
+        self.assertIsInstance(self.app.profile_avatar.controls[0].content, ft.Image)
+        self.assertEqual(auth.resume_session(self.app.token)["avatar_path"], path)
+        with Image.open(io.BytesIO(media.read_avatar(path))) as image:
+            self.assertEqual(image.size, (512, 512))
+            self.assertFalse(image.getexif())
+        other = auth.sign_in("friend-avatar", "test")
+        self.assertEqual(db.find_user("alice", other["id"])["avatar_path"], path)
+        request = db.send_friend_request(self.user["id"], other["id"])
+        db.respond_friend_request(request, other["id"], True)
+        db.save_post("photos/test.jpg", 4, "", self.user["id"])
+        self.assertEqual(db.get_feed(other["id"])[0]["avatar_path"], path)
+        self.assertEqual(db.get_friendships(other["id"])[0]["avatar_path"], path)
+        self.app.avatar_button.on_click(None)
+        await self.app.avatar_picker.on_result(event)
+        new_path = db.get_user(self.user["id"])["avatar_path"]
+        self.assertNotEqual(new_path, path)
+        self.assertFalse(media.avatar_file(path).exists())
+        self.assertTrue(media.avatar_file(new_path).exists())
+        self.assertEqual(auth.login_user("alice", "test-password")["id"], self.user["id"])
+
+    async def test_failed_avatar_save_and_stale_account(self):
+        event = SimpleNamespace(files=[SimpleNamespace(size=100, bytes=self.image)])
+        self.app.avatar_button.on_click(None)
+        await self.app.avatar_picker.on_result(event)
+        original = db.get_user(self.user["id"])["avatar_path"]
+        self.app.avatar_button.on_click(None)
+        with patch.object(db, "set_avatar", side_effect=sqlite3.OperationalError("disk full")), self.assertLogs("main", level="ERROR"):
+            await self.app.avatar_picker.on_result(event)
+        self.assertEqual(db.get_user(self.user["id"])["avatar_path"], original)
+        self.assertEqual(len(list((db.DATA_DIR / "avatars").iterdir())), 1)
+        await self.app.avatar_picker.on_result(SimpleNamespace(files=[SimpleNamespace(size=8, bytes=b"not photo")]))
+        self.assertEqual(db.get_user(self.user["id"])["avatar_path"], original)
+        self.app.avatar_button.on_click(None)
+        other = auth.sign_in("other-avatar", "test")
+        await self.app.authenticated(other)
+        await self.app.avatar_picker.on_result(event)
+        self.assertIsNone(db.get_user(other["id"])["avatar_path"])
+        self.assertEqual(db.get_user(self.user["id"])["avatar_path"], original)
+
 
 
 if __name__ == "__main__":

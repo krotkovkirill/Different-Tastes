@@ -31,7 +31,7 @@ def validate_password(password):
 
 
 def public_user(user):
-    return {key: user[key] for key in ("id", "username")}
+    return {"id": user["id"], "username": user["username"], "avatar_path": user.get("avatar_path")}
 
 
 def login_user(username, password):
@@ -58,7 +58,7 @@ def sign_in(username, password):
         return login_user(username, password)
     try:
         user_id = db.create_user(username, hash_password(password))
-        return {"id": user_id, "username": username}
+        return {"id": user_id, "username": username, "avatar_path": None}
     except sqlite3.IntegrityError as error:
         if error.sqlite_errorcode != sqlite3.SQLITE_CONSTRAINT_UNIQUE:
             raise
