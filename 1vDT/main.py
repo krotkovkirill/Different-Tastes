@@ -129,7 +129,7 @@ class Application:
                                  ft.Column(controls=[self.stats_friends, ft.Text("друзей", color=MUTED)], expand=True)]),
             ])),
             self.avatar_button,
-            ft.OutlinedButton(content="Виджет iPhone", icon=ft.Icons.WIDGETS_OUTLINED,
+            ft.OutlinedButton(content="Добавить виджет", icon=ft.Icons.WIDGETS_OUTLINED,
                 height=56, on_click=self.widget_dialog),
             ft.TextButton(content="Выйти из аккаунта", icon=ft.Icons.LOGOUT, height=56, on_click=self.logout),
         ], visible=False)
@@ -724,8 +724,15 @@ class Application:
         if self.busy or not self.require_login():
             return
         content = stack([
-            ft.Text("Виджет показывает последнюю публикацию твоей ленты. Для него нужно установить приложение Different Tastes на iPhone.", size=18),
-            ft.Text("Сборка iOS-приложения пока готовится. Сайт сам по себе не устанавливает живые виджеты.", size=16, color=MUTED),
+            ft.Text("Последнее фото, оценка и отзыв — на главном экране iPhone.", size=18),
+            ft.Text("Установка пока недоступна", size=20, weight=ft.FontWeight.BOLD),
+            ft.Text("Готовим приложение Different Tastes для установки. Ссылка на скачивание появится здесь после выпуска.", size=16, color=MUTED),
+            ft.Text("Как подключить после установки", size=20, weight=ft.FontWeight.BOLD),
+            ft.Text("1. Установи и открой Different Tastes на iPhone (iOS 17 или новее).", size=18),
+            ft.Text("2. Здесь нажми «Создать код», скопируй его и вставь в приложении. Нажми «Подключить виджет».", size=18),
+            ft.Text("3. На главном экране удерживай пустое место → «Изменить» → «Добавить виджет» → Different Tastes.", size=18),
+            ft.Text("4. Выбери размер → «Добавить виджет» → «Готово».", size=18),
+            ft.Text("Сайт не может установить приложение и разместить виджет автоматически. По нажатию на виджет откроется лента; время обновления выбирает iOS.", size=16, color=MUTED),
         ], tight=True)
         def generate(event):
             if not self.require_login():
@@ -753,7 +760,7 @@ class Application:
                 return
             self.page.pop_dialog()
             self.tell("Доступ виджета отключён")
-        self.page.show_dialog(ft.AlertDialog(modal=True, title=ft.Text("Виджет iPhone"),
+        self.page.show_dialog(ft.AlertDialog(modal=True, scrollable=True, title=ft.Text("Добавить виджет"),
             content=ft.Container(content=content, width=360), actions=[
                 ft.TextButton(content="Закрыть", on_click=lambda e: self.page.pop_dialog()),
                 ft.TextButton(content="Отключить доступ", on_click=revoke),
