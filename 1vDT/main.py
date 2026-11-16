@@ -36,6 +36,7 @@ class Application:
         self.busy = False
         self.screen = 0
         self.photo_data = None
+        self.photo_picker_token = None
         self.camera_ready = False
         self.camera = fc.Camera()
         self.feed_mode = "friends"
@@ -81,7 +82,7 @@ class Application:
         self.connect_button = primary("Открыть камеру", self.open_camera, icon=ft.Icons.CAMERA_ALT_OUTLINED)
         self.capture_button = primary("Сделать снимок", self.take_photo, icon=ft.Icons.CAMERA, visible=False)
         self.gallery_button = ft.OutlinedButton(content="Выбрать из галереи", icon=ft.Icons.PHOTO_LIBRARY_OUTLINED,
-            height=56, action=ft.PickFiles(self.picker,
+            height=56, on_click=self.photo_picker_opened, action=ft.PickFiles(self.picker,
                 file_type=ft.FilePickerFileType.IMAGE, allow_multiple=False,
                 with_data=True, cancel_upload_on_window_blur=False))
         self.camera_hint = ft.Container(
@@ -523,10 +524,16 @@ class Application:
         finally:
             self.set_busy(False)
 
+    def photo_picker_opened(self, event=None):
+        ft.context.disable_auto_update()
+        self.photo_picker_token = self.token
+
     async def photo_selected(self, event):
         if self.busy or not self.require_login() or not event.files:
             return
-        token = self.token
+        token = self.photo_picker_token
+        if token != self.token:
+            return
         self.set_busy(True)
         try:
             file = event.files[0]

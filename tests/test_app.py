@@ -297,6 +297,7 @@ class ApplicationCase(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(self.app.gallery_button.action, ft.PickFiles)
         self.assertTrue(self.app.gallery_button.action.with_data)
         self.assertEqual(self.app.gallery_button.action.file_type, ft.FilePickerFileType.IMAGE)
+        self.app.gallery_button.on_click(None)
         await self.app.picker.on_result(SimpleNamespace(files=[SimpleNamespace(size=100, bytes=photo_bytes())]))
         self.assertTrue(self.app.draft.visible)
         self.app.set_rating(5)
@@ -357,10 +358,21 @@ class ApplicationCase(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.app.camera_ready)
         self.assertIn("галереи", self.app.notice.value)
         self.app.accept_photo(self.image)
+        self.app.gallery_button.on_click(None)
         await self.app.picker.on_result(SimpleNamespace(files=[]))
         self.assertEqual(self.app.photo_data, self.image)
         await self.app.picker.on_result(SimpleNamespace(files=[SimpleNamespace(size=media.MAX_PHOTO_BYTES + 1)]))
         self.assertIn("8 МБ", self.app.notice.value)
+
+    async def test_picker_result_is_bound_to_account_that_opened_it(self):
+        self.app.gallery_button.on_click(None)
+        other = auth.sign_in("second-user", "test")
+        await self.app.authenticated(other)
+        await self.app.picker.on_result(SimpleNamespace(files=[SimpleNamespace(size=100, bytes=photo_bytes())]))
+        self.assertIsNone(self.app.photo_data)
+        self.app.gallery_button.on_click(None)
+        await self.app.picker.on_result(SimpleNamespace(files=[SimpleNamespace(size=100, bytes=photo_bytes())]))
+        self.assertIsNotNone(self.app.photo_data)
 
     async def test_pagination_responsive_and_profile(self):
         for _ in range(14):
