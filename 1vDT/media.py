@@ -5,12 +5,14 @@ from pathlib import Path
 from uuid import uuid4
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+from pillow_heif import register_heif_opener
 
 import database
 
 MAX_PHOTO_BYTES = 8 * 1024 * 1024
 MAX_PHOTO_PIXELS = 25_000_000
 Image.MAX_IMAGE_PIXELS = MAX_PHOTO_PIXELS
+register_heif_opener(thumbnails=False)
 
 
 def normalize_photo(data):
@@ -22,8 +24,8 @@ def normalize_photo(data):
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(io.BytesIO(data)) as original:
-                if original.format not in {"JPEG", "PNG", "WEBP"}:
-                    raise ValueError("Выбери фотографию JPG, PNG или WebP")
+                if original.format not in {"JPEG", "PNG", "WEBP", "HEIF"}:
+                    raise ValueError("Выбери фотографию JPG, PNG, WebP или HEIC")
                 if original.width * original.height > MAX_PHOTO_PIXELS:
                     raise ValueError("Слишком большое разрешение фотографии")
                 original.load()
@@ -39,7 +41,7 @@ def normalize_photo(data):
                 image.save(output, format="JPEG", quality=88, optimize=True)
                 return output.getvalue()
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
-        raise ValueError("Не удалось прочитать фото. Выбери JPG, PNG или WebP.") from error
+        raise ValueError("Не удалось прочитать фото. Выбери JPG, PNG, WebP или HEIC.") from error
 
 
 def photo_file(stored_path):

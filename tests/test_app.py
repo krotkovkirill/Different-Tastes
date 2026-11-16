@@ -215,6 +215,15 @@ class DatabaseCase(unittest.TestCase):
         with sqlite3.connect(backups[0]) as connection:
             self.assertIn("display_name", {row[1] for row in connection.execute("PRAGMA table_info(users)")})
 
+    def test_iphone_heic_is_normalized(self):
+        source = io.BytesIO()
+        Image.new("RGB", (120, 80), "blue").save(source, format="HEIF")
+        data = media.normalize_photo(source.getvalue())
+        with Image.open(io.BytesIO(data)) as image:
+            self.assertEqual(image.format, "JPEG")
+            self.assertEqual(image.size, (120, 80))
+            self.assertFalse(image.getexif())
+
     def test_legacy_migration_preserves_unowned_posts(self):
         with db.transaction() as connection:
             connection.execute("DROP TABLE posts")
@@ -285,8 +294,10 @@ class ApplicationCase(unittest.IsolatedAsyncioTestCase):
         self.image = media.normalize_photo(photo_bytes())
 
     async def test_gallery_publish_edit_delete(self):
-        with patch.object(type(self.app.picker), "pick_files", AsyncMock(return_value=[SimpleNamespace(size=100, bytes=photo_bytes(), path=None)])):
-            await self.app.pick_photo()
+        self.assertIsInstance(self.app.gallery_button.action, ft.PickFiles)
+        self.assertTrue(self.app.gallery_button.action.with_data)
+        self.assertEqual(self.app.gallery_button.action.file_type, ft.FilePickerFileType.IMAGE)
+        await self.app.picker.on_result(SimpleNamespace(files=[SimpleNamespace(size=100, bytes=photo_bytes())]))
         self.assertTrue(self.app.draft.visible)
         self.app.set_rating(5)
         self.app.comment.value = "x" * 31
@@ -346,11 +357,9 @@ class ApplicationCase(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.app.camera_ready)
         self.assertIn("галереи", self.app.notice.value)
         self.app.accept_photo(self.image)
-        with patch.object(type(self.app.picker), "pick_files", AsyncMock(return_value=[])):
-            await self.app.pick_photo()
+        await self.app.picker.on_result(SimpleNamespace(files=[]))
         self.assertEqual(self.app.photo_data, self.image)
-        with patch.object(type(self.app.picker), "pick_files", AsyncMock(return_value=[SimpleNamespace(size=media.MAX_PHOTO_BYTES + 1)])):
-            await self.app.pick_photo()
+        await self.app.picker.on_result(SimpleNamespace(files=[SimpleNamespace(size=media.MAX_PHOTO_BYTES + 1)]))
         self.assertIn("8 МБ", self.app.notice.value)
 
     async def test_pagination_responsive_and_profile(self):

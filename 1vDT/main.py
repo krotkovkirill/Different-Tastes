@@ -30,7 +30,7 @@ class Application:
         self.theme_index = 0
         self.theme_save_lock = asyncio.Lock()
         self.theme_switch = ThemeSwitch(self.change_theme)
-        self.picker = ft.FilePicker()
+        self.picker = ft.FilePicker(on_result=self.photo_selected)
         self.user = None
         self.token = None
         self.busy = False
@@ -81,7 +81,9 @@ class Application:
         self.connect_button = primary("Открыть камеру", self.open_camera, icon=ft.Icons.CAMERA_ALT_OUTLINED)
         self.capture_button = primary("Сделать снимок", self.take_photo, icon=ft.Icons.CAMERA, visible=False)
         self.gallery_button = ft.OutlinedButton(content="Выбрать из галереи", icon=ft.Icons.PHOTO_LIBRARY_OUTLINED,
-                                                height=56, on_click=self.pick_photo)
+            height=56, action=ft.PickFiles(self.picker,
+                file_type=ft.FilePickerFileType.IMAGE, allow_multiple=False,
+                with_data=True, cancel_upload_on_window_blur=False))
         self.camera_hint = ft.Container(
             content=stack([ft.Icon(ft.Icons.CAMERA_ALT_OUTLINED, size=64, color=ACCENT),
                 ft.Text("Один снимок. Твой вкус.", size=26, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER)], spacing=20),
@@ -521,25 +523,16 @@ class Application:
         finally:
             self.set_busy(False)
 
-    async def pick_photo(self, event=None):
-        if self.busy or not self.require_login():
+    async def photo_selected(self, event):
+        if self.busy or not self.require_login() or not event.files:
             return
         token = self.token
         self.set_busy(True)
         try:
-            files = await self.picker.pick_files(file_type=ft.FilePickerFileType.CUSTOM,
-                allowed_extensions=["jpg", "jpeg", "png", "webp"], allow_multiple=False,
-                with_data=True, cancel_upload_on_window_blur=False)
-            if not files:
-                return
-            file = files[0]
+            file = event.files[0]
             if file.size > media.MAX_PHOTO_BYTES:
                 raise ValueError("Фотография должна быть не больше 8 МБ")
-            raw = file.bytes
-            if raw is None and file.path:
-                with Path(file.path).open("rb") as stream:
-                    raw = stream.read(media.MAX_PHOTO_BYTES + 1)
-            data = await asyncio.to_thread(media.normalize_photo, bytes(raw or b""))
+            data = await asyncio.to_thread(media.normalize_photo, bytes(file.bytes or b""))
             if token == self.token and self.require_login():
                 self.accept_photo(data)
         except ValueError as exc:
