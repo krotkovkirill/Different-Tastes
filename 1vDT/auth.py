@@ -26,44 +26,43 @@ def verify_password(password_hash, password):
 
 
 def validate_password(password):
-    if not 8 <= len(password) <= 128:
-        raise ValueError("Пароль должен содержать от 8 до 128 символов")
+    if not password:
+        raise ValueError("Введи пароль")
 
 
 def public_user(user):
-    return {key: user[key] for key in ("id", "username", "display_name")}
-
-
-def register_user(username, display_name, password):
-    username = username.strip().lower()
-    display_name = display_name.strip()
-    if not re.fullmatch(r"[a-z0-9_.]{3,32}", username):
-        raise ValueError("Логин: 3–32 латинские буквы, цифры, точки или подчёркивания")
-    if not 1 <= len(display_name) <= 50:
-        raise ValueError("Имя должно содержать от 1 до 50 символов")
-    validate_password(password)
-    try:
-        user_id = db.create_user(username, display_name, hash_password(password))
-    except sqlite3.IntegrityError as error:
-        if error.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
-            raise ValueError("Этот логин уже занят") from error
-        raise
-    return {"id": user_id, "username": username, "display_name": display_name}
+    return {key: user[key] for key in ("id", "username")}
 
 
 def login_user(username, password):
     username = username.strip().lower()
-    if not username or len(username) > 128 or not password or len(password) > 128:
-        raise ValueError("Неверный логин или пароль")
+    if not username or not password:
+        raise ValueError("Неверный ник или пароль")
     now = int(time.time())
     if db.login_blocked_until(username) > now:
         raise ValueError("Слишком много попыток. Попробуй через 5 минут.")
     user = db.get_user_by_username(username)
     if user is None or not verify_password(user["password_hash"], password):
         db.record_login_failure(username, now)
-        raise ValueError("Неверный логин или пароль")
+        raise ValueError("Неверный пароль" if user is not None else "Неверный ник или пароль")
     db.clear_login_failures(username)
     return public_user(user)
+
+
+def sign_in(username, password):
+    username = username.strip().lower()
+    if not username:
+        raise ValueError("Введи ник")
+    validate_password(password)
+    if db.get_user_by_username(username) is not None:
+        return login_user(username, password)
+    try:
+        user_id = db.create_user(username, hash_password(password))
+        return {"id": user_id, "username": username}
+    except sqlite3.IntegrityError as error:
+        if error.sqlite_errorcode != sqlite3.SQLITE_CONSTRAINT_UNIQUE:
+            raise
+        return login_user(username, password)
 
 
 def change_password(user_id, current_password, new_password):

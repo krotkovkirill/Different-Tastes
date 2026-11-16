@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from time import time_ns
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -32,9 +33,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
                 username TEXT NOT NULL UNIQUE,
-                display_name TEXT NOT NULL,
-                password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                password_hash TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS posts (
                 id INTEGER PRIMARY KEY,
@@ -66,6 +65,18 @@ def init_db():
                 blocked_until INTEGER NOT NULL DEFAULT 0
             );
         """)
+        user_columns = {row[1] for row in connection.execute("PRAGMA table_info(users)")}
+        obsolete = user_columns & {"display_name", "created_at"}
+        if obsolete:
+            backup_dir = DATA_DIR / "backups"
+            backup_dir.mkdir(exist_ok=True)
+            backup = sqlite3.connect(backup_dir / f"before-simple-auth-{time_ns()}.db")
+            try:
+                connection.backup(backup)
+            finally:
+                backup.close()
+            for column in sorted(obsolete):
+                connection.execute(f"ALTER TABLE users DROP COLUMN {column}")
         columns = {row[1] for row in connection.execute("PRAGMA table_info(posts)")}
         if "user_id" not in columns:
             connection.execute("ALTER TABLE posts ADD COLUMN user_id INTEGER REFERENCES users(id)")
@@ -101,7 +112,7 @@ def get_feed(user_id, limit=12, before_id=None, own_only=False):
     with transaction() as connection:
         rows = connection.execute("""
             SELECT p.id, p.user_id, p.photo_path, p.rating, p.comment, p.created_at,
-                   u.username, u.display_name
+                   u.username
             FROM posts AS p JOIN users AS u ON u.id = p.user_id
             WHERE (? IS NULL OR p.id < ?)
               AND (p.user_id = ? OR (? = 0 AND EXISTS (
@@ -151,23 +162,13 @@ def get_user(user_id):
         return dict(row) if row else None
 
 
-def create_user(username, display_name, password_hash):
+def create_user(username, password_hash):
     with transaction() as connection:
         cursor = connection.execute(
-            "INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)",
-            (username, display_name, password_hash),
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (username, password_hash),
         )
         return cursor.lastrowid
-
-
-def update_display_name(user_id, display_name):
-    display_name = display_name.strip()
-    if not 1 <= len(display_name) <= 50:
-        raise ValueError("Имя должно содержать от 1 до 50 символов")
-    with transaction() as connection:
-        return connection.execute(
-            "UPDATE users SET display_name = ? WHERE id = ?", (display_name, user_id)
-        ).rowcount > 0
 
 
 def update_password(user_id, expected_hash, new_hash):
@@ -193,10 +194,16 @@ def get_stats(user_id):
 
 def find_user(username, current_user_id):
     with transaction() as connection:
+        nickname = username.strip().lower()
         row = connection.execute(
-            "SELECT id, username, display_name FROM users WHERE username = ? AND id != ?",
-            (username.strip().lower().lstrip("@"), current_user_id),
+            "SELECT id, username FROM users WHERE username = ? AND id != ?",
+            (nickname, current_user_id),
         ).fetchone()
+        if row is None and nickname.startswith("@"):
+            row = connection.execute(
+                "SELECT id, username FROM users WHERE username = ? AND id != ?",
+                (nickname[1:], current_user_id),
+            ).fetchone()
         return dict(row) if row else None
 
 
@@ -221,7 +228,7 @@ def get_friendships(user_id):
     with transaction() as connection:
         rows = connection.execute("""
             SELECT f.id, f.sender_id, f.recipient_id, f.status,
-                   u.id AS user_id, u.username, u.display_name
+                   u.id AS user_id, u.username
             FROM friendships AS f
             JOIN users AS u ON u.id = CASE WHEN f.sender_id = ? THEN f.recipient_id ELSE f.sender_id END
             WHERE f.sender_id = ? OR f.recipient_id = ? ORDER BY f.id DESC
@@ -260,7 +267,7 @@ def save_session(token_hash, user_id, expires_at, now):
 def get_session_user(token_hash, now):
     with transaction() as connection:
         row = connection.execute("""
-            SELECT u.id, u.username, u.display_name
+            SELECT u.id, u.username
             FROM sessions AS s JOIN users AS u ON u.id = s.user_id
             WHERE s.token_hash = ? AND s.expires_at > ?
         """, (token_hash, now)).fetchone()

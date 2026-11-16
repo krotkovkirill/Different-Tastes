@@ -13,7 +13,7 @@ class FriendsPanel(ft.Column):
         self.user = user
         self.on_change_callback = on_change
         self.is_authenticated = is_authenticated or (lambda: True)
-        self.search = text_field("Найти по логину", expand=True, on_change=sync_text)
+        self.search = text_field("Найти по нику", expand=True, on_change=sync_text)
         self.search.on_submit = self.search_user
         self.message = ft.Text("", visible=False, size=18)
         self.results = stack([])
@@ -39,11 +39,9 @@ class FriendsPanel(ft.Column):
 
     def person(self, person, actions):
         return surface(stack([
-            ft.Row(controls=[avatar(person["display_name"]),
-                ft.Column(controls=[
-                    ft.Text(person["display_name"], size=20, weight=ft.FontWeight.BOLD, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                    ft.Text(f"@{person['username']}", size=16, color=MUTED, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                ], expand=True, spacing=3),
+            ft.Row(controls=[avatar(person["username"]),
+                ft.Text(person["username"], size=20, weight=ft.FontWeight.BOLD,
+                        max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, expand=True),
             ]),
             ft.Row(controls=actions, wrap=True, spacing=8),
         ]))
@@ -81,7 +79,7 @@ class FriendsPanel(ft.Column):
         self.outgoing_title.visible = bool(counts["outgoing"])
         self.friends_title.value = f"Мои друзья · {counts['friends']}"
         if not counts["friends"]:
-            self.friends.controls = [surface(ft.Text("Найди друга по логину и отправь первую заявку.", size=20, color=MUTED))]
+            self.friends.controls = [surface(ft.Text("Найди друга по нику и отправь первую заявку.", size=20, color=MUTED))]
         if self.on_change_callback:
             self.on_change_callback()
         self.host.update()
@@ -132,14 +130,14 @@ class FriendsPanel(ft.Column):
         username = (self.search.value or "").strip()
         self.tell("")
         if not username:
-            self.tell("Введи логин друга", True)
+            self.tell("Введи ник друга", True)
         else:
             try:
                 found = db.find_user(username, self.user["id"])
                 relationships = db.get_friendships(self.user["id"])
                 relationship = next((r for r in relationships if found and r["user_id"] == found["id"]), None)
                 if not found:
-                    self.tell("Другой пользователь с таким логином не найден", True)
+                    self.tell("Другой пользователь с таким ником не найден", True)
                 elif relationship:
                     self.tell("Вы уже друзья" if relationship["status"] == "accepted" else "Между вами уже есть заявка")
                 else:

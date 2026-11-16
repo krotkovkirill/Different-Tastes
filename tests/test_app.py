@@ -36,9 +36,9 @@ class DatabaseCase(unittest.TestCase):
         self.addCleanup(self.data_patch.stop)
         self.addCleanup(self.path_patch.stop)
         db.init_db()
-        self.a = db.create_user("alice", "Alice", auth.hash_password("old-password"))
-        self.b = db.create_user("bob", "Bob", auth.hash_password("other-password"))
-        self.c = db.create_user("chris", "Chris", "unused")
+        self.a = db.create_user("alice", auth.hash_password("old-password"))
+        self.b = db.create_user("bob", auth.hash_password("other-password"))
+        self.c = db.create_user("chris", "unused")
 
     def test_friendship_permissions(self):
         with self.assertRaises(ValueError):
@@ -87,14 +87,26 @@ class DatabaseCase(unittest.TestCase):
 
     def test_auth_validation_and_legacy_login(self):
         self.assertEqual(auth.login_user(" ALICE ", "old-password")["id"], self.a)
-        with self.assertRaises(ValueError):
-            auth.register_user("alice", "Other", "new-password")
-        with self.assertRaises(ValueError):
-            auth.register_user("new-user", "Other", "1234")
-        user = auth.register_user("new_user", " New ", "new-password")
-        self.assertEqual(user["display_name"], "New")
+        with self.assertRaisesRegex(ValueError, "Неверный пароль"):
+            auth.sign_in("alice", "new-password")
+        short = auth.sign_in("я ✨", "1")
+        self.assertEqual(auth.sign_in("Я ✨", "1")["id"], short["id"])
+        self.assertEqual(db.find_user("я ✨", self.a)["id"], short["id"])
+        self.assertEqual(auth.sign_in("@ник", "p")["id"], db.find_user("@ник", self.a)["id"])
+        long_nick, long_password = "n" * 160, "🔑" * 160
+        long_user = auth.sign_in(long_nick, long_password)
+        self.assertEqual(auth.sign_in(long_nick, long_password)["id"], long_user["id"])
+        with self.assertRaisesRegex(ValueError, "Неверный пароль"):
+            auth.sign_in("я ✨", "wrong")
+        self.assertEqual(auth.sign_in("я ✨", "1")["id"], short["id"])
+        for nickname, password in (("  ", "test"), ("empty_password", "")):
+            with self.assertRaises(ValueError):
+                auth.sign_in(nickname, password)
+        self.assertIsNone(db.get_user_by_username("empty_password"))
+        user = auth.sign_in("new_user", "new-password")
+        self.assertEqual(user["username"], "new_user")
         self.assertNotIn("password_hash", user)
-        old_id = db.create_user("legacy", "Legacy", auth.hash_password("1234"))
+        old_id = db.create_user("legacy", auth.hash_password("1234"))
         self.assertEqual(auth.login_user("legacy", "1234")["id"], old_id)
         self.assertFalse(auth.verify_password("invalid", "password"))
 
@@ -134,13 +146,13 @@ class DatabaseCase(unittest.TestCase):
         self.assertIsNone(auth.resume_session(current))
 
     def test_profile_and_search_return_public_fields(self):
-        db.update_display_name(self.a, "New Name")
-        self.assertEqual(db.find_user("@ALICE", self.b)["display_name"], "New Name")
+        self.assertEqual(db.find_user("@ALICE", self.b)["username"], "alice")
         self.assertIsNone(db.find_user("alice", self.a))
         self.assertNotIn("password_hash", db.find_user("alice", self.b))
         self.assertEqual(db.get_stats(self.a), {"posts": 0, "friends": 0})
-        with self.assertRaises(ValueError):
-            db.update_display_name(self.a, " ")
+        with db.transaction() as connection:
+            self.assertEqual({row[1] for row in connection.execute("PRAGMA table_info(users)")},
+                             {"id", "username", "password_hash"})
 
     def test_photo_normalization_and_paths(self):
         normalized = media.normalize_photo(photo_bytes((2000, 1000)))
@@ -177,6 +189,31 @@ class DatabaseCase(unittest.TestCase):
         with Image.open(io.BytesIO(normalized)) as result:
             self.assertEqual(result.size, (80, 40))
             self.assertFalse(result.getexif())
+
+    def test_simple_user_migration_preserves_accounts_and_links(self):
+        post_id = db.save_post("photos/example.jpg", 4, "test", self.a)
+        request_id = db.send_friend_request(self.a, self.b)
+        db.respond_friend_request(request_id, self.b, True)
+        token = auth.create_session(self.a)
+        original_hash = db.get_user(self.a)["password_hash"]
+        with db.transaction() as connection:
+            connection.execute("ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT 'Old name'")
+            connection.execute("ALTER TABLE users ADD COLUMN created_at TEXT NOT NULL DEFAULT '2026-01-01'")
+        db.init_db()
+        db.init_db()
+        self.assertEqual(auth.sign_in("alice", "old-password")["id"], self.a)
+        self.assertEqual(db.get_user(self.a)["password_hash"], original_hash)
+        self.assertEqual(auth.resume_session(token)["id"], self.a)
+        self.assertEqual(db.get_feed(self.b)[0]["id"], post_id)
+        self.assertEqual(db.get_stats(self.a)["friends"], 1)
+        with db.transaction() as connection:
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+            self.assertEqual({row[1] for row in connection.execute("PRAGMA table_info(users)")},
+                             {"id", "username", "password_hash"})
+        backups = list((db.DATA_DIR / "backups").glob("*.db"))
+        self.assertEqual(len(backups), 1)
+        with sqlite3.connect(backups[0]) as connection:
+            self.assertIn("display_name", {row[1] for row in connection.execute("PRAGMA table_info(users)")})
 
     def test_legacy_migration_preserves_unowned_posts(self):
         with db.transaction() as connection:
@@ -243,7 +280,7 @@ class ApplicationCase(unittest.IsolatedAsyncioTestCase):
         self.page = Page()
         self.app = main.Application(self.page)
         await self.app.start()
-        self.user = auth.register_user("alice", "Alice", "test-password")
+        self.user = auth.sign_in("alice", "test-password")
         await self.app.authenticated(self.user)
         self.image = media.normalize_photo(photo_bytes())
 
@@ -331,39 +368,58 @@ class ApplicationCase(unittest.IsolatedAsyncioTestCase):
             self.assertLessEqual(self.app.body.width, width - (232 if width >= 1000 else 0) - (64 if width >= 600 else 32))
             self.assertEqual(self.app.sidebar.visible, width >= 1000)
         self.app.show_screen(3)
-        self.app.profile_name.value = "Updated"
-        self.app.save_profile()
-        self.assertEqual(self.app.profile_heading.value, "Updated")
+        self.assertEqual(self.app.profile_heading.value, "alice")
         self.assertEqual(self.app.profile_avatar.controls[0].width, 64)
         self.assertEqual(self.app.stats_posts.value, "14")
 
-    async def test_registration_confirmation_and_login(self):
+    async def test_unified_sign_in_and_login(self):
         await self.app.logout()
         form = self.app.auth_form
-        form.switch_button.on_click(None)
-        form.username.value = "new_user"
-        form.display_name.value = "New User"
-        form.password.value = "new-password"
-        form.confirmation.value = "different"
+        form.username.value = "новый ✨"
+        form.password.value = "1"
         await form.submit_button.on_click(None)
-        self.assertIsNone(self.app.user)
-        self.assertEqual(form.error_text.value, "Пароли не совпадают")
-        form.confirmation.value = "new-password"
-        await form.submit_button.on_click(None)
-        self.assertEqual(self.app.user["username"], "new_user")
+        self.assertEqual(self.app.user["username"], "новый ✨")
+        user_id = self.app.user["id"]
+        self.assertEqual(form.password.value, "")
         await self.app.logout()
         form = self.app.auth_form
-        form.username.value = "new_user"
+        form.username.value = "новый ✨"
         form.password.value = "wrong-password"
         await form.submit_button.on_click(None)
-        self.assertEqual(form.error_text.value, "Неверный логин или пароль")
+        self.assertEqual(form.error_text.value, "Неверный пароль")
         self.assertIsNone(self.app.user)
-        form.password.value = "new-password"
+        form.password.value = "1"
         await form.submit_button.on_click(None)
-        self.assertEqual(self.app.user["username"], "new_user")
+        self.assertEqual(self.app.user["id"], user_id)
+
+    async def test_theme_persistence_and_page_isolation(self):
+        from themes import PALETTES, THEME_STORAGE_KEY
+        other = main.Application(Page())
+        for index, palette in enumerate(PALETTES):
+            self.app.theme_switch.slider.value = index
+            await self.app.change_theme(SimpleNamespace(control=self.app.theme_switch.slider, data=str(index)))
+            self.assertEqual(self.page.theme.color_scheme.primary, palette[0])
+            self.assertEqual(self.app.theme_switch.thumb.left, index * 20)
+        self.assertEqual(other.theme_index, 0)
+        self.assertEqual(other.page.theme.color_scheme.primary, PALETTES[0][0])
+        self.assertEqual(Preferences.values[THEME_STORAGE_KEY], 4)
+        await self.app.logout()
+        self.assertEqual(self.app.theme_index, 4)
+        restored = main.Application(Page())
+        await restored.start()
+        self.assertEqual(restored.theme_index, 4)
+        Preferences.values[THEME_STORAGE_KEY] = "invalid"
+        fresh = main.Application(Page())
+        await fresh.start()
+        self.assertEqual(fresh.theme_index, 0)
+        Preferences.fail_set = True
+        fresh.theme_switch.slider.value = 1
+        await fresh.change_theme(SimpleNamespace(control=fresh.theme_switch.slider))
+        self.assertEqual(fresh.theme_index, 1)
+        self.assertTrue(fresh.notice.visible)
 
     async def test_friends_ui_search_and_request(self):
-        other = auth.register_user("friend", "Friend", "friend-password")
+        other = auth.sign_in("friend", "friend-password")
         panel = self.app.friend_panel
         panel.search.value = "friend"
         panel.search_user()

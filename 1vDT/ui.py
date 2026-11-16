@@ -1,21 +1,32 @@
 import flet as ft
 
-INK = "#242922"
-MUTED = "#65705F"
-ACCENT = "#345B42"
-SOFT = "#EAF0E5"
-PAPER = "#F8F8F2"
-LINE = "#E2E6DB"
-ERROR = "#A5362F"
+INK = ft.Colors.ON_SURFACE
+MUTED = ft.Colors.ON_SURFACE_VARIANT
+ACCENT = ft.Colors.PRIMARY
+SOFT = ft.Colors.PRIMARY_CONTAINER
+PAPER = ft.Colors.SURFACE_CONTAINER_LOWEST
+LINE = ft.Colors.OUTLINE_VARIANT
+ERROR = ft.Colors.ERROR
+CARD = ft.Colors.SURFACE
 
 
-def configure_page(page):
+def configure_page(page, index=0):
+    from themes import PALETTES
+    accent, soft, paper, card, ink, muted, line, _ = PALETTES[index]
     page.title = "Different Tastes"
     page.padding = 0
     page.bgcolor = PAPER
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = ft.Theme(
-        color_scheme_seed=ACCENT,
+        color_scheme_seed=accent,
+        color_scheme=ft.ColorScheme(primary=accent, on_primary="#FFFFFF",
+            primary_container=soft, on_primary_container=ink,
+            secondary=accent, secondary_container=soft, on_secondary_container=ink,
+            surface=card, surface_container_lowest=paper,
+            surface_container_low=paper, surface_container=soft,
+            surface_container_high=soft, surface_container_highest=soft,
+            on_surface=ink, on_surface_variant=muted,
+            outline=line, outline_variant=line, error="#A5362F"),
         text_theme=ft.TextTheme(
             body_medium=ft.TextStyle(size=18, color=INK),
             body_large=ft.TextStyle(size=18, color=INK),
@@ -28,7 +39,7 @@ def configure_page(page):
             shape=ft.RoundedRectangleBorder(radius=16),
         )),
         navigation_bar_theme=ft.NavigationBarTheme(
-            bgcolor="#FFFFFF", indicator_color=SOFT, height=80,
+            bgcolor=CARD, indicator_color=SOFT, height=80,
             label_text_style=ft.TextStyle(size=16, weight=ft.FontWeight.W_600),
         ),
     )
@@ -52,7 +63,7 @@ def avatar(name, size=48):
 
 
 def surface(content, padding=20):
-    return ft.Container(content=content, padding=padding, bgcolor="#FFFFFF",
+    return ft.Container(content=content, padding=padding, bgcolor=CARD,
                         border=ft.Border.all(1, LINE), border_radius=24)
 
 

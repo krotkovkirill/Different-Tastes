@@ -14,7 +14,8 @@ import database as db
 import media
 from auth_ui import create_auth_form
 from friends_ui import create_friends_panel
-from ui import ACCENT, ERROR, INK, LINE, MUTED, PAPER, SOFT, avatar, configure_page, primary, stack, surface, sync_text, text_field
+from themes import PALETTES, THEME_STORAGE_KEY, ThemeSwitch
+from ui import CARD, ACCENT, ERROR, INK, LINE, MUTED, PAPER, SOFT, avatar, configure_page, primary, stack, surface, sync_text, text_field
 
 logger = logging.getLogger(__name__)
 PAGE_SIZE = 12
@@ -26,6 +27,9 @@ class Application:
         configure_page(page)
         db.init_db()
         self.preferences = ft.SharedPreferences()
+        self.theme_index = 0
+        self.theme_save_lock = asyncio.Lock()
+        self.theme_switch = ThemeSwitch(self.change_theme)
         self.picker = ft.FilePicker()
         self.user = None
         self.token = None
@@ -88,18 +92,16 @@ class Application:
         self.camera_view = stack([ft.Text("Новый вкус", size=32, weight=ft.FontWeight.BOLD), self.composer], visible=False)
         self.friends_slot = stack([])
         self.friends_view = stack([self.friends_slot], visible=False)
-        self.profile_name = text_field("Имя", on_change=sync_text)
         self.profile_heading = ft.Text("", size=28, weight=ft.FontWeight.BOLD)
-        self.profile_login = ft.Text("", size=20, color=MUTED, selectable=True)
         self.profile_avatar = ft.Row(controls=[])
         self.stats_posts = ft.Text("0", size=32, weight=ft.FontWeight.BOLD)
         self.stats_friends = ft.Text("0", size=32, weight=ft.FontWeight.BOLD)
         self.profile_view = stack([
             ft.Text("Профиль", size=32, weight=ft.FontWeight.BOLD),
-            surface(stack([self.profile_avatar, self.profile_heading, self.profile_login,
+            surface(stack([self.profile_avatar, self.profile_heading,
                 ft.Row(controls=[ft.Column(controls=[self.stats_posts, ft.Text("публикаций", color=MUTED)], expand=True),
                                  ft.Column(controls=[self.stats_friends, ft.Text("друзей", color=MUTED)], expand=True)]),
-                self.profile_name, primary("Сохранить имя", self.save_profile)])),
+            ])),
             ft.OutlinedButton(content="Сменить пароль", height=56, on_click=self.password_dialog),
             ft.TextButton(content="Выйти из аккаунта", icon=ft.Icons.LOGOUT, height=56, on_click=self.logout),
         ], visible=False)
@@ -118,12 +120,11 @@ class Application:
             ft.Row(controls=[ft.Icon(ft.Icons.RESTAURANT_ROUNDED, color=ACCENT, size=28),
                              ft.Text("Different\nTastes", size=24, weight=ft.FontWeight.BOLD)], spacing=12),
             ft.Container(height=20), *self.sidebar_buttons,
-        ], spacing=12), width=232, padding=24, bgcolor="#FFFFFF", visible=False)
-        self.brand = ft.Row(controls=[ft.Icon(ft.Icons.RESTAURANT_ROUNDED, color=ACCENT, size=28),
-            ft.Text("Different Tastes", size=24, weight=ft.FontWeight.BOLD, expand=True)], expand=True, spacing=10)
-        self.profile_button = ft.IconButton(icon=ft.Icons.PERSON_OUTLINE, tooltip="Мой профиль", width=48, height=48,
-                                            on_click=lambda e: self.show_screen(3), visible=False)
-        self.header = ft.Row(controls=[self.brand, self.profile_button], height=56)
+        ], spacing=12), width=232, padding=24, bgcolor=CARD, visible=False)
+        self.brand_title = ft.Text("Different Tastes", size=22, weight=ft.FontWeight.BOLD,
+                                   max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+        self.brand = ft.Row(controls=[self.brand_title], expand=True)
+        self.header = ft.Row(controls=[self.brand, self.theme_switch], height=56, spacing=8)
         self.body = stack([self.loading, self.notice, self.auth_slot, self.app_view], spacing=20,
                            scroll=ft.ScrollMode.AUTO, expand=True)
         self.content_column = ft.Column(controls=[self.header, self.body], spacing=24,
@@ -136,6 +137,12 @@ class Application:
     async def start(self):
         self.page.add(self.root)
         self.resize()
+        try:
+            saved_theme = await self.preferences.get(THEME_STORAGE_KEY)
+            if isinstance(saved_theme, int) and not isinstance(saved_theme, bool) and 0 <= saved_theme < len(PALETTES):
+                self.apply_theme(saved_theme)
+        except Exception:
+            logger.warning("Could not restore theme preference", exc_info=True)
         try:
             token = await self.preferences.get(auth.SESSION_STORAGE_KEY)
             user = await asyncio.to_thread(auth.resume_session, token)
@@ -153,6 +160,32 @@ class Application:
             self.auth_slot.visible = self.user is None
             self.resize()
 
+    def apply_theme(self, index):
+        self.theme_index = index
+        configure_page(self.page, index)
+        self.main_area.gradient = (ft.LinearGradient(
+            begin=ft.Alignment.TOP_LEFT, end=ft.Alignment.BOTTOM_RIGHT,
+            colors=["#FFF0E6", "#FFFBEA", "#F0FBF4", "#F4EFFF"])
+            if index == 3 else None)
+        self.theme_switch.select(index)
+        self.page.update()
+
+    async def change_theme(self, event):
+        try:
+            value = event.data if isinstance(getattr(event, "data", None), (str, int, float)) else event.control.value
+            index = max(0, min(len(PALETTES) - 1, round(float(value))))
+        except (TypeError, ValueError, OverflowError):
+            return
+        self.apply_theme(index)
+        try:
+            async with self.theme_save_lock:
+                saved = await self.preferences.set(THEME_STORAGE_KEY, self.theme_index)
+            if not saved:
+                self.tell("Тема изменена, но браузер не сохранил выбор.", True)
+        except Exception:
+            logger.warning("Could not save theme preference", exc_info=True)
+            self.tell("Тема изменена, но браузер не сохранил выбор.", True)
+
     def resize(self, event=None):
         width = getattr(self.page, "width", None) or 390
         desktop = width >= 1000 and self.user is not None
@@ -162,6 +195,7 @@ class Application:
         available = width - (232 if desktop else 0) - 2 * gutter
         content_width = min(720 if self.user else 480, max(240, available))
         self.header.width = self.body.width = content_width
+        self.brand_title.size = 16 if content_width < 340 else 20 if content_width < 440 else 24
         self.main_area.padding = ft.Padding.symmetric(horizontal=gutter, vertical=16)
         self.camera.width = max(1, content_width - 42)
         self.camera.height = self.camera.width * 3 / 4
@@ -178,7 +212,6 @@ class Application:
         self.busy = value
         self.composer.disabled = value
         self.navigation.disabled = value
-        self.profile_button.disabled = value
         self.profile_view.disabled = value
         self.sidebar.disabled = value
         self.loading.visible = value
@@ -214,7 +247,6 @@ class Application:
         self.notice.visible = False
         self.auth_slot.visible = False
         self.app_view.visible = True
-        self.profile_button.visible = True
         self.friend_panel = create_friends_panel(self.page, user, on_change=self.friendships_changed, is_authenticated=self.require_login)
         self.friends_slot.controls = [self.friend_panel]
         self.show_screen(0)
@@ -228,7 +260,6 @@ class Application:
         self.friends_slot.controls.clear()
         self.friend_panel = None
         self.app_view.visible = False
-        self.profile_button.visible = False
         self.notice.visible = False
         self.auth_form = create_auth_form(self.page, self.authenticated)
         self.auth_form.error_text.value = message
@@ -355,10 +386,10 @@ class Application:
             date = datetime.fromisoformat(post["created_at"]).replace(tzinfo=timezone.utc).astimezone().strftime("%d.%m")
         except (ValueError, TypeError):
             date = ""
-        return ft.Container(bgcolor="#FFFFFF", border=ft.Border.all(1, LINE), border_radius=24,
+        return ft.Container(bgcolor=CARD, border=ft.Border.all(1, LINE), border_radius=24,
             clip_behavior=ft.ClipBehavior.ANTI_ALIAS, content=stack([
-                ft.Container(padding=16, content=ft.Row(controls=[avatar(post["display_name"]),
-                    ft.Text(post["display_name"], size=21, weight=ft.FontWeight.BOLD, expand=True,
+                ft.Container(padding=16, content=ft.Row(controls=[avatar(post["username"]),
+                    ft.Text(post["username"], size=21, weight=ft.FontWeight.BOLD, expand=True,
                             max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, tooltip=f"@{post['username']}"), menu])),
                 ft.Container(content=image, bgcolor=SOFT),
                 ft.Container(padding=20, content=stack([
@@ -601,33 +632,14 @@ class Application:
     def load_profile(self):
         if not self.require_login():
             return
-        self.profile_heading.value = self.user["display_name"]
-        self.profile_login.value = f"@{self.user['username']}"
-        self.profile_name.value = self.user["display_name"]
-        self.profile_avatar.controls = [avatar(self.user["display_name"], 64)]
+        self.profile_heading.value = self.user["username"]
+        self.profile_avatar.controls = [avatar(self.user["username"], 64)]
         try:
             stats = db.get_stats(self.user["id"])
             self.stats_posts.value = str(stats["posts"])
             self.stats_friends.value = str(stats["friends"])
         except sqlite3.Error:
             self.tell("Не удалось загрузить профиль. Попробуй ещё раз.", True)
-
-    def save_profile(self, event=None):
-        if self.busy or not self.require_login():
-            return
-        try:
-            if not db.update_display_name(self.user["id"], self.profile_name.value or ""):
-                raise ValueError("Аккаунт не найден")
-        except ValueError as exc:
-            self.profile_name.error_text = str(exc)
-            self.page.update()
-            return
-        except sqlite3.Error:
-            self.tell("Не удалось сохранить имя. Попробуй ещё раз.", True)
-            return
-        self.profile_name.error_text = None
-        self.load_profile()
-        self.tell("Имя сохранено")
 
     def password_dialog(self, event=None):
         if self.busy or not self.require_login():
